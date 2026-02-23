@@ -88,14 +88,28 @@ class SSTNavigatorPipeline:
         if self._df is None:
             raise RuntimeError("Call load_data() first.")
 
-        self._load_component("embedder")
         texts = self._df["unofficial_text_en"].tolist()
         if not texts:
             raise RuntimeError("No decision texts available to index after preprocessing.")
+
+        if self._searcher.load_embeddings_cache(
+            texts=texts,
+            cache_dir=config.EMBEDDING_CACHE_DIR,
+            max_tokens=config.EMBEDDING_MAX_TOKENS,
+        ):
+            logger.info("Using cached embeddings; skipping rebuild.")
+            return
+
+        self._load_component("embedder")
         self._searcher.embed_documents(
             texts,
             batch_size=2,  # conservative for 4B model
             progress_callback=progress_callback,
+        )
+        self._searcher.save_embeddings_cache(
+            texts=texts,
+            cache_dir=config.EMBEDDING_CACHE_DIR,
+            max_tokens=config.EMBEDDING_MAX_TOKENS,
         )
 
     @property
