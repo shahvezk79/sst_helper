@@ -23,6 +23,7 @@ EMBEDDING_CACHE_DIR = ".cache/embeddings"
 EMBEDDING_BATCH_SIZE_DEV = 8
 EMBEDDING_BATCH_SIZE_PROD = 2
 
+
 # --- Reranker parameters ---
 RERANKER_INSTRUCTION = (
     "Given a legal query describing an appellant's situation, "

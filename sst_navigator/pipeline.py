@@ -90,71 +90,21 @@ class SSTNavigatorPipeline:
             raise RuntimeError("Call load_data() first.")
 
         texts = self._df["unofficial_text_en"].tolist()
-        doc_ids = [
-            str(url) if str(url).strip() else f"row:{idx}"
-            for idx, url in enumerate(self._df.get("url_en", []))
-        ]
-        text_signatures = [self._searcher._text_signature(t) for t in texts]
         if not texts:
             raise RuntimeError("No decision texts available to index after preprocessing.")
 
-        cache_bundle = self._searcher.load_embeddings_cache(
-            cache_dir=config.EMBEDDING_CACHE_DIR,
-            max_tokens=config.EMBEDDING_MAX_TOKENS,
-        )
-
+        # Keep the batch size configuration we saved earlier
         batch_size = (
             config.EMBEDDING_BATCH_SIZE_DEV if self.dev_mode else config.EMBEDDING_BATCH_SIZE_PROD
         )
 
-        if cache_bundle:
-            cached_embeddings, cache_meta = cache_bundle
-            cached_ids = cache_meta.get("doc_ids", [])
-            cached_signatures = cache_meta.get("text_signatures", [])
-            reuse_map = {
-                doc_id: (sig, i)
-                for i, (doc_id, sig) in enumerate(zip(cached_ids, cached_signatures))
-            }
-
-            reusable = 0
-            missing_indices: list[int] = []
-            assembled: list[np.ndarray | None] = [None] * len(texts)
-            for i, (doc_id, sig) in enumerate(zip(doc_ids, text_signatures)):
-                cached = reuse_map.get(doc_id)
-                if cached and cached[0] == sig:
-                    assembled[i] = cached_embeddings[cached[1]]
-                    reusable += 1
-                else:
-                    missing_indices.append(i)
-
-            if reusable:
-                logger.info("Reused %d/%d cached embeddings.", reusable, len(texts))
-
-            if not missing_indices:
-                self._searcher._doc_embeddings = np.stack(assembled)  # type: ignore[arg-type]
-                logger.info("Using cached embeddings; skipping rebuild.")
-                return
-
-            self._load_component("embedder")
-            missing_texts = [texts[i] for i in missing_indices]
-            new_vectors = self._searcher.embed_texts(
-                missing_texts,
-                batch_size=batch_size,
-                max_tokens=config.EMBEDDING_MAX_TOKENS,
-                progress_callback=progress_callback,
-                progress_start=reusable,
-                progress_total=len(texts),
-            )
-            for out_idx, row_idx in enumerate(missing_indices):
-                assembled[row_idx] = new_vectors[out_idx]
-
-            self._searcher._doc_embeddings = np.stack(assembled)  # type: ignore[arg-type]
-            self._searcher.save_embeddings_cache(
-                cache_dir=config.EMBEDDING_CACHE_DIR,
-                doc_ids=doc_ids,
-                text_signatures=text_signatures,
-                max_tokens=config.EMBEDDING_MAX_TOKENS,
-            )
+        # Use the clean, dynamic cache loading from the main branch
+        if self._searcher.load_embeddings_cache(
+            texts=texts,
+            cache_dir=config.EMBEDDING_CACHE_DIR,
+            max_tokens=config.EMBEDDING_MAX_TOKENS,
+        ):
+            logger.info("Using cached embeddings; skipping rebuild.")
             return
 
         self._load_component("embedder")
@@ -164,13 +114,14 @@ class SSTNavigatorPipeline:
             max_tokens=config.EMBEDDING_MAX_TOKENS,
             progress_callback=progress_callback,
         )
+        
+        # Use the clean cache saving method from the main branch
         self._searcher.save_embeddings_cache(
+            texts=texts,
             cache_dir=config.EMBEDDING_CACHE_DIR,
-            doc_ids=doc_ids,
-            text_signatures=text_signatures,
             max_tokens=config.EMBEDDING_MAX_TOKENS,
         )
-
+        
     @property
     def is_ready(self) -> bool:
         return self._df is not None and self._searcher.has_embeddings

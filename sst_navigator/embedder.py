@@ -64,9 +64,6 @@ def _get_embedding_model_classes(config: dict):
 class SemanticSearcher:
     """Embeds documents and queries, returns top-K by cosine similarity."""
 
-    CACHE_META_FILENAME = "embeddings.meta.json"
-    CACHE_EMB_FILENAME = "embeddings.npy"
-
     def __init__(self, model_name: str = config.EMBEDDING_MODEL):
         self.model_name = model_name
         self.model = None
@@ -74,70 +71,69 @@ class SemanticSearcher:
         # Stored document embeddings (numpy for fast cosine on CPU)
         self._doc_embeddings: np.ndarray | None = None
 
-    # -- Persistent cache --------------------------------------------------
+  # -- Persistent cache --------------------------------------------------
 
-    @staticmethod
-    def _text_signature(text: str) -> str:
-        """Short checksum used to detect changed document content."""
-        return hashlib.blake2b(text.encode("utf-8"), digest_size=8).hexdigest()
+    def _build_cache_key(self, texts: list[str], max_tokens: int) -> str:
+        """Return a stable key for the current corpus + embedding settings."""
+        digest = hashlib.sha256()
+        digest.update(self.model_name.encode("utf-8"))
+        digest.update(config.EMBEDDING_INSTRUCTION.encode("utf-8"))
+        digest.update(str(max_tokens).encode("utf-8"))
+        for text in texts:
+            encoded = text.encode("utf-8")
+            digest.update(str(len(encoded)).encode("utf-8"))
+            digest.update(encoded)
+        return digest.hexdigest()[:16]
 
     def load_embeddings_cache(
         self,
+        texts: list[str],
         cache_dir: str,
         max_tokens: int = config.EMBEDDING_MAX_TOKENS,
-    ) -> tuple[np.ndarray, dict] | None:
-        """Load cached embeddings+metadata if cache exists and model settings match."""
+    ) -> bool:
+        """Load cached embeddings if available and matching this corpus."""
+        key = self._build_cache_key(texts, max_tokens)
         base = Path(cache_dir)
-        emb_path = base / self.CACHE_EMB_FILENAME
-        meta_path = base / self.CACHE_META_FILENAME
+        emb_path = base / f"{key}.npy"
+        meta_path = base / f"{key}.json"
 
         if not emb_path.exists() or not meta_path.exists():
-            return None
+            return False
 
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning("Ignoring unreadable embedding metadata at %s: %s", meta_path, e)
-            return None
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if meta.get("key") != key:
+            return False
 
-        if meta.get("model") != self.model_name:
-            return None
-        if meta.get("instruction") != config.EMBEDDING_INSTRUCTION:
-            return None
-        if meta.get("max_tokens") != max_tokens:
-            return None
-
-        embeddings = np.load(emb_path)
+        self._doc_embeddings = np.load(emb_path)
         logger.info("Loaded embedding cache from %s", emb_path)
-        return embeddings, meta
+        return True
 
     def save_embeddings_cache(
         self,
+        texts: list[str],
         cache_dir: str,
-        doc_ids: list[str],
-        text_signatures: list[str],
         max_tokens: int = config.EMBEDDING_MAX_TOKENS,
     ) -> None:
         """Persist current embeddings to disk for faster future startups."""
         if self._doc_embeddings is None:
             return
 
+        key = self._build_cache_key(texts, max_tokens)
         base = Path(cache_dir)
         base.mkdir(parents=True, exist_ok=True)
-        emb_path = base / self.CACHE_EMB_FILENAME
-        meta_path = base / self.CACHE_META_FILENAME
+        emb_path = base / f"{key}.npy"
+        meta_path = base / f"{key}.json"
 
         np.save(emb_path, self._doc_embeddings)
         meta_path.write_text(
             json.dumps(
                 {
+                    "key": key,
                     "model": self.model_name,
                     "instruction": config.EMBEDDING_INSTRUCTION,
                     "max_tokens": max_tokens,
-                    "num_documents": len(doc_ids),
+                    "num_documents": len(texts),
                     "shape": list(self._doc_embeddings.shape),
-                    "doc_ids": doc_ids,
-                    "text_signatures": text_signatures,
                 },
                 indent=2,
             ),
