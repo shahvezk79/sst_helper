@@ -57,24 +57,29 @@ def main() -> None:
     meta_path = cache_dir / config.EMBEDDING_METADATA_FILE
 
     logger.info("Downloading existing cache state from %s", args.repo_id)
-    hf_hub_download(
-        repo_id=args.repo_id,
-        filename=config.EMBEDDING_CACHE_FILE,
-        repo_type=args.repo_type,
-        local_dir=str(cache_dir),
-        local_dir_use_symlinks=False,
-    )
-    hf_hub_download(
-        repo_id=args.repo_id,
-        filename=config.EMBEDDING_METADATA_FILE,
-        repo_type=args.repo_type,
-        local_dir=str(cache_dir),
-        local_dir_use_symlinks=False,
-    )
-
-    existing_embeddings = np.load(emb_path, allow_pickle=False)
-    existing_urls = _load_metadata(meta_path)
-    existing_url_set = set(existing_urls)
+    try:
+        hf_hub_download(
+            repo_id=args.repo_id,
+            filename=config.EMBEDDING_CACHE_FILE,
+            repo_type=args.repo_type,
+            local_dir=str(cache_dir),
+            local_dir_use_symlinks=False,
+        )
+        hf_hub_download(
+            repo_id=args.repo_id,
+            filename=config.EMBEDDING_METADATA_FILE,
+            repo_type=args.repo_type,
+            local_dir=str(cache_dir),
+            local_dir_use_symlinks=False,
+        )
+        existing_embeddings = np.load(emb_path, allow_pickle=False)
+        existing_urls = _load_metadata(meta_path)
+        existing_url_set = set(existing_urls)
+    except Exception as e:
+        logger.warning("Could not download existing cache (likely empty repo). Starting fresh.")
+        existing_embeddings = None
+        existing_urls = []
+        existing_url_set = set()
 
     logger.info("Loading latest SST decisions dataset")
     df = load_sst_decisions(max_rows=None)
@@ -98,7 +103,11 @@ def main() -> None:
     finally:
         searcher.unload_model()
 
-    merged_embeddings = np.concatenate([existing_embeddings, new_embeddings], axis=0)
+    if existing_embeddings is not None:
+        merged_embeddings = np.concatenate([existing_embeddings, new_embeddings], axis=0)
+    else:
+        merged_embeddings = new_embeddings
+        
     merged_urls = existing_urls + new_df["url_en"].astype(str).tolist()
 
     np.save(emb_path, merged_embeddings)
