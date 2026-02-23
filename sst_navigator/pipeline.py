@@ -108,42 +108,18 @@ class SSTNavigatorPipeline:
         return len(self._df)
 
     def build_index(self, progress_callback=None) -> None:
-        """Embed all documents (Stage 1 prep)."""
+        """Load a precomputed embedding index (Stage 1 prep)."""
         if self._df is None:
             raise RuntimeError("Call load_data() first.")
 
-        texts = self._df["unofficial_text_en"].tolist()
-        if not texts:
-            raise RuntimeError("No decision texts available to index after preprocessing.")
-
-        # Keep the batch size configuration we saved earlier
-        batch_size = (
-            config.EMBEDDING_BATCH_SIZE_DEV if self.dev_mode else config.EMBEDDING_BATCH_SIZE_PROD
-        )
-        params = self._active_params()
-
-        # Use the clean, dynamic cache loading from the main branch
-        if self._searcher.load_embeddings_cache(
-            texts=texts,
-            cache_dir=config.EMBEDDING_CACHE_DIR,
-            max_tokens=params["embedding_max_tokens"],
-        ):
+        if self._searcher.load_embeddings_cache(cache_dir=config.EMBEDDING_CACHE_DIR):
             logger.info("Using cached embeddings; skipping rebuild.")
             return
 
-        self._load_component("embedder")
-        self._searcher.embed_documents(
-            texts,
-            batch_size=batch_size,
-            max_tokens=params["embedding_max_tokens"],
-            progress_callback=progress_callback,
-        )
-        
-        # Use the clean cache saving method from the main branch
-        self._searcher.save_embeddings_cache(
-            texts=texts,
-            cache_dir=config.EMBEDDING_CACHE_DIR,
-            max_tokens=params["embedding_max_tokens"],
+        raise RuntimeError(
+            "Could not load precomputed embedding cache. "
+            "Check your internet connection or run scripts/update_index.py "
+            "to refresh the local cache before starting the app."
         )
         
     @property
