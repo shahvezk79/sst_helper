@@ -97,8 +97,7 @@ with st.sidebar:
     if st.button("Load data & build index", type="primary", use_container_width=True):
         pipeline = get_pipeline()
         pipeline.dev_mode = dev_mode
-        pipeline.generation_backend = gen_backend
-        pipeline._generator.backend = gen_backend
+        pipeline.set_generation_backend(gen_backend)
 
         with st.status("Initialising pipeline…", expanded=True) as status:
             # Step 1: load data

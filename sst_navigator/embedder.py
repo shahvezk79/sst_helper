@@ -143,6 +143,11 @@ class SemanticSearcher:
         all_embeddings: list[np.ndarray] = []
         total = len(texts)
 
+        if total == 0:
+            logger.warning("No documents were provided for embedding.")
+            self._doc_embeddings = np.empty((0, 0), dtype=np.float32)
+            return
+
         for start in range(0, total, batch_size):
             end = min(start + batch_size, total)
             batch = texts[start:end]
@@ -168,6 +173,8 @@ class SemanticSearcher:
         """
         if self._doc_embeddings is None:
             raise RuntimeError("Call embed_documents() before search().")
+        if self._doc_embeddings.shape[0] == 0:
+            return []
 
         formatted_query = (
             f"Instruct: {config.EMBEDDING_INSTRUCTION}\n"
@@ -184,4 +191,4 @@ class SemanticSearcher:
 
     @property
     def has_embeddings(self) -> bool:
-        return self._doc_embeddings is not None
+        return self._doc_embeddings is not None and self._doc_embeddings.shape[0] > 0
