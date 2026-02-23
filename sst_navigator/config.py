@@ -19,6 +19,7 @@ EMBEDDING_INSTRUCTION = (
     "administrative legal tribunal decisions"
 )
 EMBEDDING_MAX_TOKENS = 8192  # Max tokens per text chunk for embedding
+EMBEDDING_CACHE_DIR = ".cache/embeddings"
 
 # --- Reranker parameters ---
 RERANKER_INSTRUCTION = (
