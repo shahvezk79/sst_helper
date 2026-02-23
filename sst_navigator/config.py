@@ -25,6 +25,10 @@ EMBEDDING_INSTRUCTION = (
 EMBEDDING_MAX_TOKENS = 8192  # Max tokens per text chunk for embedding
 FAST_EMBEDDING_MAX_TOKENS = 4096
 EMBEDDING_CACHE_DIR = ".cache/embeddings"
+EMBEDDING_CACHE_REPO_ID = "a2aj/sst-navigator-embeddings"
+EMBEDDING_CACHE_REPO_TYPE = "dataset"
+EMBEDDING_CACHE_FILE = "sst_embeddings.npy"
+EMBEDDING_METADATA_FILE = "metadata.json"
 EMBEDDING_BATCH_SIZE_DEV = 8
 EMBEDDING_BATCH_SIZE_PROD = 2
 

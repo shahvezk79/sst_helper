@@ -6,12 +6,12 @@ extraction and last-token pooling (the official Qwen3 embedding strategy).
 """
 
 import logging
-import hashlib
 import json
 from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
+from huggingface_hub import hf_hub_download
 from mlx_lm.utils import load_model, _download
 from transformers import AutoTokenizer
 
@@ -73,73 +73,54 @@ class SemanticSearcher:
 
   # -- Persistent cache --------------------------------------------------
 
-    def _build_cache_key(self, texts: list[str], max_tokens: int) -> str:
-        """Return a stable key for the current corpus + embedding settings."""
-        digest = hashlib.sha256()
-        digest.update(self.model_name.encode("utf-8"))
-        digest.update(config.EMBEDDING_INSTRUCTION.encode("utf-8"))
-        digest.update(str(max_tokens).encode("utf-8"))
-        for text in texts:
-            encoded = text.encode("utf-8")
-            digest.update(str(len(encoded)).encode("utf-8"))
-            digest.update(encoded)
-        return digest.hexdigest()[:16]
-
     def load_embeddings_cache(
         self,
-        texts: list[str],
-        cache_dir: str,
-        max_tokens: int = config.EMBEDDING_MAX_TOKENS,
+        cache_dir: str = config.EMBEDDING_CACHE_DIR,
+        repo_id: str = config.EMBEDDING_CACHE_REPO_ID,
+        repo_type: str = config.EMBEDDING_CACHE_REPO_TYPE,
+        embeddings_file: str = config.EMBEDDING_CACHE_FILE,
+        metadata_file: str = config.EMBEDDING_METADATA_FILE,
     ) -> bool:
-        """Load cached embeddings if available and matching this corpus."""
-        key = self._build_cache_key(texts, max_tokens)
+        """Load cached embeddings from local disk or Hugging Face dataset cache."""
         base = Path(cache_dir)
-        emb_path = base / f"{key}.npy"
-        meta_path = base / f"{key}.json"
+        base.mkdir(parents=True, exist_ok=True)
+        emb_path = base / embeddings_file
+        meta_path = base / metadata_file
+
+        if not emb_path.exists() or not meta_path.exists():
+            try:
+                hf_hub_download(
+                    repo_id=repo_id,
+                    filename=embeddings_file,
+                    repo_type=repo_type,
+                    local_dir=str(base),
+                    local_dir_use_symlinks=False,
+                )
+                hf_hub_download(
+                    repo_id=repo_id,
+                    filename=metadata_file,
+                    repo_type=repo_type,
+                    local_dir=str(base),
+                    local_dir_use_symlinks=False,
+                )
+                logger.info("Downloaded embedding cache from %s", repo_id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not download embedding cache from %s: %s", repo_id, exc
+                )
 
         if not emb_path.exists() or not meta_path.exists():
             return False
 
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        if meta.get("key") != key:
+        try:
+            json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.error("Embedding metadata file is invalid JSON: %s", exc)
             return False
 
-        self._doc_embeddings = np.load(emb_path)
+        self._doc_embeddings = np.load(emb_path, allow_pickle=False)
         logger.info("Loaded embedding cache from %s", emb_path)
         return True
-
-    def save_embeddings_cache(
-        self,
-        texts: list[str],
-        cache_dir: str,
-        max_tokens: int = config.EMBEDDING_MAX_TOKENS,
-    ) -> None:
-        """Persist current embeddings to disk for faster future startups."""
-        if self._doc_embeddings is None:
-            return
-
-        key = self._build_cache_key(texts, max_tokens)
-        base = Path(cache_dir)
-        base.mkdir(parents=True, exist_ok=True)
-        emb_path = base / f"{key}.npy"
-        meta_path = base / f"{key}.json"
-
-        np.save(emb_path, self._doc_embeddings)
-        meta_path.write_text(
-            json.dumps(
-                {
-                    "key": key,
-                    "model": self.model_name,
-                    "instruction": config.EMBEDDING_INSTRUCTION,
-                    "max_tokens": max_tokens,
-                    "num_documents": len(texts),
-                    "shape": list(self._doc_embeddings.shape),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        logger.info("Saved embedding cache to %s", emb_path)
 
     # -- Model lifecycle ---------------------------------------------------
 
