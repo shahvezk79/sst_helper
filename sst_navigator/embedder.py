@@ -71,7 +71,7 @@ class SemanticSearcher:
         # Stored document embeddings (numpy for fast cosine on CPU)
         self._doc_embeddings: np.ndarray | None = None
 
-    # -- Persistent cache --------------------------------------------------
+  # -- Persistent cache --------------------------------------------------
 
     def _build_cache_key(self, texts: list[str], max_tokens: int) -> str:
         """Return a stable key for the current corpus + embedding settings."""
@@ -198,6 +198,34 @@ class SemanticSearcher:
 
     # -- Public API --------------------------------------------------------
 
+    def embed_texts(
+        self,
+        texts: list[str],
+        batch_size: int = 4,
+        max_tokens: int = config.EMBEDDING_MAX_TOKENS,
+        progress_callback=None,
+        progress_start: int = 0,
+        progress_total: int | None = None,
+    ) -> np.ndarray:
+        """Compute embeddings for a list of texts and return vectors."""
+        all_embeddings: list[np.ndarray] = []
+        total = len(texts)
+        progress_total = progress_total if progress_total is not None else total
+
+        if total == 0:
+            return np.empty((0, 0), dtype=np.float32)
+
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            batch = texts[start:end]
+            emb = self._embed_batch(batch, max_tokens)
+            all_embeddings.append(emb)
+            if progress_callback:
+                progress_callback(progress_start + end, progress_total)
+            logger.debug("Embedded %d / %d documents", end, total)
+
+        return np.concatenate(all_embeddings, axis=0)
+
     def embed_documents(
         self,
         texts: list[str],
@@ -213,7 +241,6 @@ class SemanticSearcher:
             max_tokens: Truncation length per text.
             progress_callback: Optional callable(current, total) for UI updates.
         """
-        all_embeddings: list[np.ndarray] = []
         total = len(texts)
 
         if total == 0:
@@ -221,16 +248,12 @@ class SemanticSearcher:
             self._doc_embeddings = np.empty((0, 0), dtype=np.float32)
             return
 
-        for start in range(0, total, batch_size):
-            end = min(start + batch_size, total)
-            batch = texts[start:end]
-            emb = self._embed_batch(batch, max_tokens)
-            all_embeddings.append(emb)
-            if progress_callback:
-                progress_callback(end, total)
-            logger.debug("Embedded %d / %d documents", end, total)
-
-        self._doc_embeddings = np.concatenate(all_embeddings, axis=0)
+        self._doc_embeddings = self.embed_texts(
+            texts,
+            batch_size=batch_size,
+            max_tokens=max_tokens,
+            progress_callback=progress_callback,
+        )
         logger.info(
             "Document embeddings cached — shape %s", self._doc_embeddings.shape
         )

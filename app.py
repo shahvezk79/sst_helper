@@ -84,7 +84,14 @@ def get_pipeline() -> SSTNavigatorPipeline:
 with st.sidebar:
     st.header("Settings")
 
-    dev_mode = st.toggle("Development mode (500 rows)", value=True)
+    dev_mode = st.toggle(
+        "Development mode (500 rows)",
+        value=True,
+        help=(
+            "When enabled, only the first 500 decisions are loaded for faster "
+            "startup and iteration. Turn off to index the full dataset."
+        ),
+    )
     gen_backend = st.selectbox(
         "Summary backend",
         ["mlx", "openai", "gemini"],
