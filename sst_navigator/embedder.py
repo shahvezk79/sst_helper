@@ -262,6 +262,7 @@ class SemanticSearcher:
         self,
         query: str,
         top_k: int = config.STAGE1_TOP_K,
+        max_tokens: int = config.EMBEDDING_MAX_TOKENS,
     ) -> list[tuple[int, float]]:
         """Return the top-K (index, score) pairs for a query.
 
@@ -276,7 +277,7 @@ class SemanticSearcher:
             f"Instruct: {config.EMBEDDING_INSTRUCTION}\n"
             f"Query:{query}"
         )
-        q_vec = self._embed_batch([formatted_query], config.EMBEDDING_MAX_TOKENS)
+        q_vec = self._embed_batch([formatted_query], max_tokens)
 
         # Cosine similarity (vectors are already normalised → dot product)
         scores = self._doc_embeddings @ q_vec.T  # (n_docs, 1)

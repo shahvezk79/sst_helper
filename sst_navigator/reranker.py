@@ -102,6 +102,7 @@ class Reranker:
         query: str,
         candidates: list[dict],
         top_k: int = config.STAGE2_TOP_K,
+        max_tokens: int = config.RERANKER_MAX_TOKENS,
     ) -> list[dict]:
         """Score and re-sort candidates by cross-encoder relevance.
 
@@ -118,7 +119,7 @@ class Reranker:
         logger.info("Reranking %d candidates …", len(candidates))
         for cand in candidates:
             # Truncate document text to stay within context window
-            doc_text = cand["text"][:config.RERANKER_MAX_TOKENS * 4]
+            doc_text = cand["text"][:max_tokens * 4]
             cand["reranker_score"] = self._score_one(query, doc_text)
             logger.debug(
                 "  candidate %s → %.4f", cand.get("name", "?"), cand["reranker_score"]

@@ -30,7 +30,10 @@ _CASE_CARD_SYSTEM = (
 )
 
 
-def _build_prompt(decision_text: str, max_chars: int = 24000) -> str:
+def _build_prompt(
+    decision_text: str,
+    max_chars: int = config.GENERATION_MAX_CHARS,
+) -> str:
     """Wrap the decision text into a chat prompt."""
     # Truncate to fit context — leave room for system prompt + output
     truncated = decision_text[:max_chars]
@@ -76,34 +79,49 @@ class CaseCardGenerator:
 
     # -- Backend dispatch --------------------------------------------------
 
-    def generate_case_card(self, decision_text: str) -> str:
+    def generate_case_card(
+        self,
+        decision_text: str,
+        max_tokens: int = config.GENERATION_MAX_TOKENS,
+        max_chars: int = config.GENERATION_MAX_CHARS,
+    ) -> str:
         """Return a formatted case-card string for the given decision."""
         if self.backend == "mlx":
-            return self._generate_mlx(decision_text)
+            return self._generate_mlx(decision_text, max_tokens=max_tokens, max_chars=max_chars)
         if self.backend == "openai":
-            return self._generate_openai(decision_text)
+            return self._generate_openai(decision_text, max_tokens=max_tokens, max_chars=max_chars)
         if self.backend == "gemini":
-            return self._generate_gemini(decision_text)
+            return self._generate_gemini(decision_text, max_tokens=max_tokens, max_chars=max_chars)
         raise ValueError(f"Unknown backend: {self.backend}")
 
     # -- MLX ---------------------------------------------------------------
 
-    def _generate_mlx(self, decision_text: str) -> str:
+    def _generate_mlx(
+        self,
+        decision_text: str,
+        max_tokens: int = config.GENERATION_MAX_TOKENS,
+        max_chars: int = config.GENERATION_MAX_CHARS,
+    ) -> str:
         if self._model is None:
             raise RuntimeError("Call load_model() first.")
-        prompt = _build_prompt(decision_text)
+        prompt = _build_prompt(decision_text, max_chars=max_chars)
         response = mlx_generate(
             self._model,
             self._tokenizer,
             prompt=prompt,
-            max_tokens=config.GENERATION_MAX_TOKENS,
+            max_tokens=max_tokens,
             verbose=False,
         )
         return response.strip()
 
     # -- OpenAI ------------------------------------------------------------
 
-    def _generate_openai(self, decision_text: str) -> str:
+    def _generate_openai(
+        self,
+        decision_text: str,
+        max_tokens: int = config.GENERATION_MAX_TOKENS,
+        max_chars: int = config.GENERATION_MAX_CHARS,
+    ) -> str:
         try:
             from openai import OpenAI
         except ImportError:
@@ -114,7 +132,7 @@ class CaseCardGenerator:
             raise RuntimeError("Set OPENAI_API_KEY in your environment.")
 
         client = OpenAI(api_key=api_key)
-        truncated = decision_text[:24000]
+        truncated = decision_text[:max_chars]
 
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -122,14 +140,19 @@ class CaseCardGenerator:
                 {"role": "system", "content": _CASE_CARD_SYSTEM},
                 {"role": "user", "content": f"Here is the tribunal decision:\n\n{truncated}"},
             ],
-            max_tokens=config.GENERATION_MAX_TOKENS,
+            max_tokens=max_tokens,
             temperature=0.3,
         )
         return resp.choices[0].message.content.strip()
 
     # -- Gemini ------------------------------------------------------------
 
-    def _generate_gemini(self, decision_text: str) -> str:
+    def _generate_gemini(
+        self,
+        decision_text: str,
+        max_tokens: int = config.GENERATION_MAX_TOKENS,
+        max_chars: int = config.GENERATION_MAX_CHARS,
+    ) -> str:
         try:
             import google.generativeai as genai
         except ImportError:
@@ -143,12 +166,12 @@ class CaseCardGenerator:
 
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.0-flash")
-        truncated = decision_text[:24000]
+        truncated = decision_text[:max_chars]
 
         resp = model.generate_content(
             f"{_CASE_CARD_SYSTEM}\n\nHere is the tribunal decision:\n\n{truncated}",
             generation_config=genai.GenerationConfig(
-                max_output_tokens=config.GENERATION_MAX_TOKENS,
+                max_output_tokens=max_tokens,
                 temperature=0.3,
             ),
         )

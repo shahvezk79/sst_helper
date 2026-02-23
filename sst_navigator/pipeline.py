@@ -48,9 +48,11 @@ class SSTNavigatorPipeline:
         self,
         dev_mode: bool = True,
         generation_backend: str = "mlx",
+        fast_mode: bool = False,
     ):
         self.dev_mode = dev_mode
         self.generation_backend = generation_backend
+        self.fast_mode = fast_mode
 
         self._df: pd.DataFrame | None = None
         self._searcher = SemanticSearcher()
@@ -76,6 +78,27 @@ class SSTNavigatorPipeline:
         if self._loaded == "generator":
             self._loaded = None
 
+
+    def _active_params(self) -> dict:
+        """Return runtime parameters based on current quality/speed mode."""
+        if self.fast_mode:
+            return {
+                "embedding_max_tokens": config.FAST_EMBEDDING_MAX_TOKENS,
+                "stage1_top_k": config.FAST_STAGE1_TOP_K,
+                "stage2_top_k": config.FAST_STAGE2_TOP_K,
+                "reranker_max_tokens": config.FAST_RERANKER_MAX_TOKENS,
+                "generation_max_tokens": config.FAST_GENERATION_MAX_TOKENS,
+                "generation_max_chars": config.FAST_GENERATION_MAX_CHARS,
+            }
+        return {
+            "embedding_max_tokens": config.EMBEDDING_MAX_TOKENS,
+            "stage1_top_k": config.STAGE1_TOP_K,
+            "stage2_top_k": config.STAGE2_TOP_K,
+            "reranker_max_tokens": config.RERANKER_MAX_TOKENS,
+            "generation_max_tokens": config.GENERATION_MAX_TOKENS,
+            "generation_max_chars": config.GENERATION_MAX_CHARS,
+        }
+
     # -- Data loading & indexing -------------------------------------------
 
     def load_data(self, progress_callback=None) -> int:
@@ -97,12 +120,13 @@ class SSTNavigatorPipeline:
         batch_size = (
             config.EMBEDDING_BATCH_SIZE_DEV if self.dev_mode else config.EMBEDDING_BATCH_SIZE_PROD
         )
+        params = self._active_params()
 
         # Use the clean, dynamic cache loading from the main branch
         if self._searcher.load_embeddings_cache(
             texts=texts,
             cache_dir=config.EMBEDDING_CACHE_DIR,
-            max_tokens=config.EMBEDDING_MAX_TOKENS,
+            max_tokens=params["embedding_max_tokens"],
         ):
             logger.info("Using cached embeddings; skipping rebuild.")
             return
@@ -111,7 +135,7 @@ class SSTNavigatorPipeline:
         self._searcher.embed_documents(
             texts,
             batch_size=batch_size,
-            max_tokens=config.EMBEDDING_MAX_TOKENS,
+            max_tokens=params["embedding_max_tokens"],
             progress_callback=progress_callback,
         )
         
@@ -119,7 +143,7 @@ class SSTNavigatorPipeline:
         self._searcher.save_embeddings_cache(
             texts=texts,
             cache_dir=config.EMBEDDING_CACHE_DIR,
-            max_tokens=config.EMBEDDING_MAX_TOKENS,
+            max_tokens=params["embedding_max_tokens"],
         )
         
     @property
@@ -166,11 +190,17 @@ class SSTNavigatorPipeline:
         if not self.is_ready:
             raise RuntimeError("Pipeline not initialised. Call load_data() + build_index().")
 
+        params = self._active_params()
+
         # ---- Stage 1: Semantic search ------------------------------------
         # Embedder must already be loaded (index is cached), but we need
         # the model in memory to embed the query.
         self._load_component("embedder")
-        hits = self._searcher.search(query, top_k=config.STAGE1_TOP_K)
+        hits = self._searcher.search(
+            query,
+            top_k=params["stage1_top_k"],
+            max_tokens=params["embedding_max_tokens"],
+        )
         logger.info("Stage 1 returned %d candidates.", len(hits))
         if not hits:
             return PipelineOutput(
@@ -194,7 +224,10 @@ class SSTNavigatorPipeline:
         # ---- Stage 2: Reranking -----------------------------------------
         self._load_component("reranker")
         top_results = self._reranker.rerank(
-            query, candidates, top_k=config.STAGE2_TOP_K
+            query,
+            candidates,
+            top_k=params["stage2_top_k"],
+            max_tokens=params["reranker_max_tokens"],
         )
         logger.info("Stage 2 returned %d results.", len(top_results))
         if not top_results:
@@ -205,7 +238,11 @@ class SSTNavigatorPipeline:
 
         # ---- Stage 3: Case card generation -------------------------------
         self._load_component("generator")
-        case_card = self._generator.generate_case_card(top_results[0]["text"])
+        case_card = self._generator.generate_case_card(
+            top_results[0]["text"],
+            max_tokens=params["generation_max_tokens"],
+            max_chars=params["generation_max_chars"],
+        )
 
         # ---- Assemble output ---------------------------------------------
         results = []
