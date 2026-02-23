@@ -59,6 +59,22 @@ class SSTNavigatorPipeline:
         # Track which heavy model is currently loaded
         self._loaded: str | None = None
 
+    def set_generation_backend(self, backend: str) -> None:
+        """Switch generation backend safely and reset generator state."""
+        if backend == self.generation_backend:
+            return
+
+        # If generator is currently active, unload any local model first.
+        if self._loaded == "generator":
+            self._generator.unload_model()
+
+        self.generation_backend = backend
+        self._generator = CaseCardGenerator(backend=backend)
+
+        # Force a fresh component load on next search.
+        if self._loaded == "generator":
+            self._loaded = None
+
     # -- Data loading & indexing -------------------------------------------
 
     def load_data(self, progress_callback=None) -> int:
@@ -74,6 +90,8 @@ class SSTNavigatorPipeline:
 
         self._load_component("embedder")
         texts = self._df["unofficial_text_en"].tolist()
+        if not texts:
+            raise RuntimeError("No decision texts available to index after preprocessing.")
         self._searcher.embed_documents(
             texts,
             batch_size=2,  # conservative for 4B model
@@ -130,6 +148,11 @@ class SSTNavigatorPipeline:
         self._load_component("embedder")
         hits = self._searcher.search(query, top_k=config.STAGE1_TOP_K)
         logger.info("Stage 1 returned %d candidates.", len(hits))
+        if not hits:
+            return PipelineOutput(
+                case_card="No similar cases were found for this query.",
+                results=[],
+            )
 
         # Build candidate dicts for the reranker
         candidates = []
@@ -150,6 +173,11 @@ class SSTNavigatorPipeline:
             query, candidates, top_k=config.STAGE2_TOP_K
         )
         logger.info("Stage 2 returned %d results.", len(top_results))
+        if not top_results:
+            return PipelineOutput(
+                case_card="No sufficiently relevant cases were found after reranking.",
+                results=[],
+            )
 
         # ---- Stage 3: Case card generation -------------------------------
         self._load_component("generator")
