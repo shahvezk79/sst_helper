@@ -6,6 +6,9 @@ extraction and last-token pooling (the official Qwen3 embedding strategy).
 """
 
 import logging
+import hashlib
+import json
+from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
@@ -61,12 +64,86 @@ def _get_embedding_model_classes(config: dict):
 class SemanticSearcher:
     """Embeds documents and queries, returns top-K by cosine similarity."""
 
+    CACHE_META_FILENAME = "embeddings.meta.json"
+    CACHE_EMB_FILENAME = "embeddings.npy"
+
     def __init__(self, model_name: str = config.EMBEDDING_MODEL):
         self.model_name = model_name
         self.model = None
         self.tokenizer = None
         # Stored document embeddings (numpy for fast cosine on CPU)
         self._doc_embeddings: np.ndarray | None = None
+
+    # -- Persistent cache --------------------------------------------------
+
+    @staticmethod
+    def _text_signature(text: str) -> str:
+        """Short checksum used to detect changed document content."""
+        return hashlib.blake2b(text.encode("utf-8"), digest_size=8).hexdigest()
+
+    def load_embeddings_cache(
+        self,
+        cache_dir: str,
+        max_tokens: int = config.EMBEDDING_MAX_TOKENS,
+    ) -> tuple[np.ndarray, dict] | None:
+        """Load cached embeddings+metadata if cache exists and model settings match."""
+        base = Path(cache_dir)
+        emb_path = base / self.CACHE_EMB_FILENAME
+        meta_path = base / self.CACHE_META_FILENAME
+
+        if not emb_path.exists() or not meta_path.exists():
+            return None
+
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Ignoring unreadable embedding metadata at %s: %s", meta_path, e)
+            return None
+
+        if meta.get("model") != self.model_name:
+            return None
+        if meta.get("instruction") != config.EMBEDDING_INSTRUCTION:
+            return None
+        if meta.get("max_tokens") != max_tokens:
+            return None
+
+        embeddings = np.load(emb_path)
+        logger.info("Loaded embedding cache from %s", emb_path)
+        return embeddings, meta
+
+    def save_embeddings_cache(
+        self,
+        cache_dir: str,
+        doc_ids: list[str],
+        text_signatures: list[str],
+        max_tokens: int = config.EMBEDDING_MAX_TOKENS,
+    ) -> None:
+        """Persist current embeddings to disk for faster future startups."""
+        if self._doc_embeddings is None:
+            return
+
+        base = Path(cache_dir)
+        base.mkdir(parents=True, exist_ok=True)
+        emb_path = base / self.CACHE_EMB_FILENAME
+        meta_path = base / self.CACHE_META_FILENAME
+
+        np.save(emb_path, self._doc_embeddings)
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "model": self.model_name,
+                    "instruction": config.EMBEDDING_INSTRUCTION,
+                    "max_tokens": max_tokens,
+                    "num_documents": len(doc_ids),
+                    "shape": list(self._doc_embeddings.shape),
+                    "doc_ids": doc_ids,
+                    "text_signatures": text_signatures,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        logger.info("Saved embedding cache to %s", emb_path)
 
     # -- Model lifecycle ---------------------------------------------------
 
@@ -125,6 +202,34 @@ class SemanticSearcher:
 
     # -- Public API --------------------------------------------------------
 
+    def embed_texts(
+        self,
+        texts: list[str],
+        batch_size: int = 4,
+        max_tokens: int = config.EMBEDDING_MAX_TOKENS,
+        progress_callback=None,
+        progress_start: int = 0,
+        progress_total: int | None = None,
+    ) -> np.ndarray:
+        """Compute embeddings for a list of texts and return vectors."""
+        all_embeddings: list[np.ndarray] = []
+        total = len(texts)
+        progress_total = progress_total if progress_total is not None else total
+
+        if total == 0:
+            return np.empty((0, 0), dtype=np.float32)
+
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            batch = texts[start:end]
+            emb = self._embed_batch(batch, max_tokens)
+            all_embeddings.append(emb)
+            if progress_callback:
+                progress_callback(progress_start + end, progress_total)
+            logger.debug("Embedded %d / %d documents", end, total)
+
+        return np.concatenate(all_embeddings, axis=0)
+
     def embed_documents(
         self,
         texts: list[str],
@@ -140,7 +245,6 @@ class SemanticSearcher:
             max_tokens: Truncation length per text.
             progress_callback: Optional callable(current, total) for UI updates.
         """
-        all_embeddings: list[np.ndarray] = []
         total = len(texts)
 
         if total == 0:
@@ -148,16 +252,12 @@ class SemanticSearcher:
             self._doc_embeddings = np.empty((0, 0), dtype=np.float32)
             return
 
-        for start in range(0, total, batch_size):
-            end = min(start + batch_size, total)
-            batch = texts[start:end]
-            emb = self._embed_batch(batch, max_tokens)
-            all_embeddings.append(emb)
-            if progress_callback:
-                progress_callback(end, total)
-            logger.debug("Embedded %d / %d documents", end, total)
-
-        self._doc_embeddings = np.concatenate(all_embeddings, axis=0)
+        self._doc_embeddings = self.embed_texts(
+            texts,
+            batch_size=batch_size,
+            max_tokens=max_tokens,
+            progress_callback=progress_callback,
+        )
         logger.info(
             "Document embeddings cached — shape %s", self._doc_embeddings.shape
         )
