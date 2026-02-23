@@ -1,0 +1,21 @@
+# Core
+pandas>=2.0
+pyarrow>=14.0
+numpy>=1.24
+
+# Apple Silicon ML
+mlx>=0.22.0
+mlx-lm>=0.20.0
+
+# Hugging Face
+transformers>=4.40
+huggingface_hub>=0.23
+tokenizers>=0.19
+
+# Frontend
+streamlit>=1.35
+
+# Optional: LLM API for case card generation
+# Uncomment one:
+# openai>=1.30
+# google-generativeai>=0.5
