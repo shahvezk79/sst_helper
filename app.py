@@ -73,6 +73,7 @@ def get_pipeline() -> SSTNavigatorPipeline:
         st.session_state.pipeline = SSTNavigatorPipeline(
             dev_mode=True,
             generation_backend="mlx",
+            fast_mode=False,
         )
     return st.session_state.pipeline
 
@@ -99,12 +100,24 @@ with st.sidebar:
         help="'mlx' runs fully local. 'openai'/'gemini' need an API key in env.",
     )
 
+    fast_mode = st.toggle(
+        "Fast mode (lower latency, slightly lower accuracy)",
+        value=False,
+        help=(
+            "Uses fewer retrieval candidates and shorter model inputs to reduce "
+            "embedding/search/generation latency. May reduce ranking and summary quality."
+        ),
+    )
+    if fast_mode:
+        st.warning("Fast mode is ON: results may be slightly less accurate.")
+
     st.divider()
 
     if st.button("Load data & build index", type="primary", use_container_width=True):
         pipeline = get_pipeline()
         pipeline.dev_mode = dev_mode
         pipeline.set_generation_backend(gen_backend)
+        pipeline.fast_mode = fast_mode
 
         with st.status("Initialising pipeline…", expanded=True) as status:
             # Step 1: load data
@@ -187,6 +200,8 @@ search_clicked = st.button(
 
 if search_clicked and query.strip():
     pipeline = get_pipeline()
+
+    pipeline.fast_mode = fast_mode
 
     with st.spinner("Searching and analysing decisions…"):
         output = pipeline.search(query.strip())
