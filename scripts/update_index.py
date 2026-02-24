@@ -36,14 +36,15 @@ logger = logging.getLogger(__name__)
 SCATTER_GATHER_THRESHOLD = 1000
 CHUNK_SIZE = 500
 
-# Tuned for MacBook Pro M5 (16 GB unified memory).  Larger batches
-# improve GPU occupancy and memory-bandwidth utilisation on Apple Silicon.
-BATCH_SIZE = 24
+# Tuned for MacBook Pro M5 (16 GB unified memory).  The 4B embedding
+# model consumes ~4 GB; each text at 8192 tokens needs ~290 MB of KV
+# cache across 36 layers, so batch_size=4 keeps peak GPU memory ≈ 5.6 GB
+# and leaves headroom for the OS and other processes.
+BATCH_SIZE = 4
 
 # Within each chunk, save partial progress every CHECKPOINT_EVERY texts
-# so a mid-chunk crash only loses one interval (~24 s of work) instead
-# of the whole chunk.
-CHECKPOINT_EVERY = BATCH_SIZE * 4  # 96 texts
+# so a mid-chunk crash only loses one interval instead of the whole chunk.
+CHECKPOINT_EVERY = BATCH_SIZE * 25  # 100 texts
 
 
 # ---------------------------------------------------------------------------
