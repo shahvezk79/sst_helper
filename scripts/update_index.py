@@ -40,11 +40,11 @@ CHUNK_SIZE = 500
 # model consumes ~4 GB; each text at 8192 tokens needs ~290 MB of KV
 # cache across 36 layers, so batch_size=4 keeps peak GPU memory ≈ 5.6 GB
 # and leaves headroom for the OS and other processes.
-BATCH_SIZE = 1
+BATCH_SIZE = 4
 
 # Within each chunk, save partial progress every CHECKPOINT_EVERY texts
 # so a mid-chunk crash only loses one interval instead of the whole chunk.
-CHECKPOINT_EVERY = BATCH_SIZE * 25  # 25 texts
+CHECKPOINT_EVERY = BATCH_SIZE * 25  # 100 texts
 
 
 # ---------------------------------------------------------------------------
@@ -136,16 +136,21 @@ def _embed_chunk_resumable(
         completed = json.loads(
             partial_progress_path.read_text(encoding="utf-8"),
         )["completed"]
-        all_emb: np.ndarray | None = np.load(partial_emb_path, allow_pickle=False)
+        prev_emb: np.ndarray | None = np.load(partial_emb_path, allow_pickle=False)
         logger.info("  Resuming chunk at text %d / %d.", completed, len(texts))
     else:
         completed = 0
-        all_emb = None
+        prev_emb = None
 
     remaining = texts[completed:]
     if not remaining:
-        assert all_emb is not None
-        return all_emb
+        assert prev_emb is not None
+        return prev_emb
+
+    # Accumulate new interval embeddings in a list; concatenate only at
+    # checkpoint boundaries to avoid the O(n²) cost of repeated binary
+    # np.concatenate on a growing array.
+    new_parts: list[np.ndarray] = []
 
     for i in range(0, len(remaining), checkpoint_every):
         sub = remaining[i : i + checkpoint_every]
@@ -154,16 +159,23 @@ def _embed_chunk_resumable(
             batch_size=batch_size,
             max_tokens=config.EMBEDDING_MAX_TOKENS,
         )
-
-        all_emb = (
-            np.concatenate([all_emb, sub_emb], axis=0)
-            if all_emb is not None
-            else sub_emb
-        )
+        new_parts.append(sub_emb)
         completed += len(sub)
 
+        # Build the full array for the checkpoint save
+        new_block = (
+            np.concatenate(new_parts, axis=0)
+            if len(new_parts) > 1
+            else new_parts[0]
+        )
+        checkpoint_emb = (
+            np.concatenate([prev_emb, new_block], axis=0)
+            if prev_emb is not None
+            else new_block
+        )
+
         # Persist partial state so a crash only loses one interval
-        np.save(partial_emb_path, all_emb)
+        np.save(partial_emb_path, checkpoint_emb)
         partial_progress_path.write_text(
             json.dumps({"completed": completed}), encoding="utf-8",
         )
@@ -172,7 +184,7 @@ def _embed_chunk_resumable(
         gc.collect()
         mx.clear_cache()
 
-    return all_emb  # type: ignore[return-value]
+    return checkpoint_emb  # type: ignore[possibly-undefined]
 
 
 def _scatter(
@@ -386,6 +398,14 @@ def main() -> None:
     new_texts = new_df["unofficial_text_en"].tolist()
     new_urls = new_df["url_en"].astype(str).tolist()
     logger.info("Found %d new decisions to embed.", len(new_df))
+
+    # Sort by text length so that similarly-sized documents land in the same
+    # batch.  With batch_size > 1, the tokenizer pads every text in a batch
+    # to the length of the longest one — grouping by length avoids wasting
+    # GPU cycles on padding tokens.
+    sorted_pairs = sorted(zip(new_texts, new_urls), key=lambda p: len(p[0]))
+    new_texts = [t for t, _ in sorted_pairs]
+    new_urls = [u for _, u in sorted_pairs]
 
     # -- Choose strategy ---------------------------------------------------
     if len(new_texts) >= SCATTER_GATHER_THRESHOLD:
