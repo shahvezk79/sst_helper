@@ -145,7 +145,7 @@ class SemanticSearcher:
         """Free the model from memory (useful before loading the reranker)."""
         self.model = None
         self.tokenizer = None
-        mx.metal.clear_cache()
+        mx.clear_cache()
         logger.info("Embedding model unloaded.")
 
     # -- Embedding logic ---------------------------------------------------
