@@ -40,11 +40,11 @@ CHUNK_SIZE = 500
 # model consumes ~4 GB; each text at 8192 tokens needs ~290 MB of KV
 # cache across 36 layers, so batch_size=4 keeps peak GPU memory ≈ 5.6 GB
 # and leaves headroom for the OS and other processes.
-BATCH_SIZE = 2
+BATCH_SIZE = 1
 
 # Within each chunk, save partial progress every CHECKPOINT_EVERY texts
 # so a mid-chunk crash only loses one interval instead of the whole chunk.
-CHECKPOINT_EVERY = BATCH_SIZE * 25  # 100 texts
+CHECKPOINT_EVERY = BATCH_SIZE * 25  # 25 texts
 
 
 # ---------------------------------------------------------------------------
