@@ -36,6 +36,15 @@ logger = logging.getLogger(__name__)
 SCATTER_GATHER_THRESHOLD = 1000
 CHUNK_SIZE = 500
 
+# Tuned for MacBook Pro M5 (16 GB unified memory).  Larger batches
+# improve GPU occupancy and memory-bandwidth utilisation on Apple Silicon.
+BATCH_SIZE = 24
+
+# Within each chunk, save partial progress every CHECKPOINT_EVERY texts
+# so a mid-chunk crash only loses one interval (~24 s of work) instead
+# of the whole chunk.
+CHECKPOINT_EVERY = BATCH_SIZE * 4  # 96 texts
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -105,16 +114,79 @@ def _load_existing_cache(
 # Phase 1 — Scatter: embed chunks and save each to its own file
 # ---------------------------------------------------------------------------
 
+def _embed_chunk_resumable(
+    searcher,
+    texts: list[str],
+    batch_size: int,
+    checkpoint_every: int,
+    partial_emb_path: Path,
+    partial_progress_path: Path,
+) -> np.ndarray:
+    """Embed *texts* with periodic intra-chunk saves.
+
+    If *partial_emb_path* and *partial_progress_path* already exist from a
+    previous interrupted run, the already-embedded prefix is loaded and
+    embedding resumes from where it stopped.
+
+    Returns the full (len(texts), embed_dim) array.
+    """
+    # Resume from partial progress if available
+    if partial_emb_path.exists() and partial_progress_path.exists():
+        completed = json.loads(
+            partial_progress_path.read_text(encoding="utf-8"),
+        )["completed"]
+        all_emb: np.ndarray | None = np.load(partial_emb_path, allow_pickle=False)
+        logger.info("  Resuming chunk at text %d / %d.", completed, len(texts))
+    else:
+        completed = 0
+        all_emb = None
+
+    remaining = texts[completed:]
+    if not remaining:
+        assert all_emb is not None
+        return all_emb
+
+    for i in range(0, len(remaining), checkpoint_every):
+        sub = remaining[i : i + checkpoint_every]
+        sub_emb = searcher.embed_texts(
+            sub,
+            batch_size=batch_size,
+            max_tokens=config.EMBEDDING_MAX_TOKENS,
+        )
+
+        all_emb = (
+            np.concatenate([all_emb, sub_emb], axis=0)
+            if all_emb is not None
+            else sub_emb
+        )
+        completed += len(sub)
+
+        # Persist partial state so a crash only loses one interval
+        np.save(partial_emb_path, all_emb)
+        partial_progress_path.write_text(
+            json.dumps({"completed": completed}), encoding="utf-8",
+        )
+
+        del sub_emb
+        gc.collect()
+        mx.clear_cache()
+
+    return all_emb  # type: ignore[return-value]
+
+
 def _scatter(
     texts: list[str],
     urls: list[str],
     chunk_dir: Path,
     chunk_size: int,
+    batch_size: int = BATCH_SIZE,
+    checkpoint_every: int = CHECKPOINT_EVERY,
 ) -> int:
     """Embed *texts* in chunks, writing each to *chunk_dir*.
 
-    Returns the number of chunks produced.  Already-existing chunk files
-    are skipped, making the run fully resumable.
+    Returns the number of chunks produced.  Completed chunk files are
+    skipped entirely, and partially-completed chunks resume from the
+    last intra-chunk checkpoint.
     """
     from sst_navigator.embedder import SemanticSearcher
 
@@ -152,13 +224,20 @@ def _scatter(
             chunk_texts = texts[start:end]
             chunk_urls = urls[start:end]
 
-            chunk_emb = searcher.embed_texts(
+            # Paths for intra-chunk partial progress
+            partial_emb = chunk_dir / f"chunk_{idx:04d}_partial.npy"
+            partial_prog = chunk_dir / f"chunk_{idx:04d}_partial.json"
+
+            chunk_emb = _embed_chunk_resumable(
+                searcher,
                 chunk_texts,
-                batch_size=config.EMBEDDING_BATCH_SIZE_DEV,
-                max_tokens=config.EMBEDDING_MAX_TOKENS,
+                batch_size=batch_size,
+                checkpoint_every=checkpoint_every,
+                partial_emb_path=partial_emb,
+                partial_progress_path=partial_prog,
             )
 
-            # Save chunk atomically (write to tmp then rename)
+            # Promote to final chunk file (atomic rename)
             emb_file = chunk_dir / f"chunk_{idx:04d}.npy"
             meta_file = chunk_dir / f"chunk_{idx:04d}.json"
             tmp_emb = emb_file.with_suffix(".npy.tmp")
@@ -169,7 +248,10 @@ def _scatter(
             tmp_emb.rename(emb_file)
             tmp_meta.rename(meta_file)
 
-            # Free GPU and CPU memory before next chunk
+            # Clean up partial files
+            partial_emb.unlink(missing_ok=True)
+            partial_prog.unlink(missing_ok=True)
+
             del chunk_emb
             gc.collect()
             mx.clear_cache()
@@ -238,7 +320,7 @@ def _direct_update(
     try:
         new_embeddings = searcher.embed_texts(
             texts,
-            batch_size=config.EMBEDDING_BATCH_SIZE_DEV,
+            batch_size=BATCH_SIZE,
             max_tokens=config.EMBEDDING_MAX_TOKENS,
         )
     finally:
