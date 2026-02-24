@@ -176,7 +176,7 @@ class SemanticSearcher:
         normed = pooled / mx.maximum(norms, mx.array(1e-9))
         mx.eval(normed)
 
-        return np.array(normed.tolist(), dtype=np.float32)
+        return np.array(normed, dtype=np.float32)
 
     # -- Public API --------------------------------------------------------
 
