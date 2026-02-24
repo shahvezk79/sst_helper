@@ -7,6 +7,7 @@ extraction and last-token pooling (the official Qwen3 embedding strategy).
 
 import logging
 import json
+import gc
 from pathlib import Path
 
 import mlx.core as mx
@@ -201,6 +202,12 @@ class SemanticSearcher:
             batch = texts[start:end]
             emb = self._embed_batch(batch, max_tokens)
             all_embeddings.append(emb)
+            
+            # --- NEW CACHE CLEARING LOGIC ---
+            mx.clear_cache()
+            gc.collect()
+            # --------------------------------
+            
             if progress_callback:
                 progress_callback(progress_start + end, progress_total)
             logger.debug("Embedded %d / %d documents", end, total)
