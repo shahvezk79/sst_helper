@@ -241,7 +241,7 @@ def _scatter(
             # Promote to final chunk file (atomic rename)
             emb_file = chunk_dir / f"chunk_{idx:04d}.npy"
             meta_file = chunk_dir / f"chunk_{idx:04d}.json"
-            tmp_emb = emb_file.with_suffix(".npy.tmp")
+            tmp_emb = chunk_dir / f"chunk_{idx:04d}_tmp.npy"
             tmp_meta = meta_file.with_suffix(".json.tmp")
 
             np.save(tmp_emb, chunk_emb)
