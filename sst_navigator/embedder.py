@@ -7,7 +7,6 @@ extraction and last-token pooling (the official Qwen3 embedding strategy).
 
 import logging
 import json
-import gc
 from pathlib import Path
 
 import mlx.core as mx
@@ -176,7 +175,16 @@ class SemanticSearcher:
         normed = pooled / mx.maximum(norms, mx.array(1e-9))
         mx.eval(normed)
 
-        return np.array(normed, dtype=np.float32)
+        result = np.array(normed, dtype=np.float32)
+
+        # Eagerly free large MLX tensors so Metal memory is reclaimable
+        # *before* the next batch allocates.  Without this, hidden_states
+        # (~235 MB at batch_size=4 / 8192 tokens) lingers until Python's
+        # reference counter catches up, fragmenting the Metal heap.
+        del encoded, input_ids, attention_mask, hidden_states
+        del seq_lengths, batch_idx, pooled, norms, normed
+
+        return result
 
     # -- Public API --------------------------------------------------------
 
@@ -202,11 +210,8 @@ class SemanticSearcher:
             batch = texts[start:end]
             emb = self._embed_batch(batch, max_tokens)
             all_embeddings.append(emb)
-            
-            # --- NEW CACHE CLEARING LOGIC ---
+
             mx.clear_cache()
-            gc.collect()
-            # --------------------------------
             
             if progress_callback:
                 progress_callback(progress_start + end, progress_total)
