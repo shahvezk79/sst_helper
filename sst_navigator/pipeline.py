@@ -111,7 +111,7 @@ class SSTNavigatorPipeline:
         """Download precomputed embeddings and align with the loaded dataframe.
 
         The cached embedding vectors may be in a different order than the
-        dataframe rows (``update_index.py`` sorts by text length for
+        dataframe rows (``scripts/update_index.py`` sorts by text length for
         efficient batching).  This method downloads the cache from
         HuggingFace, then reorders the vectors so that embedding row *i*
         corresponds to ``self._df.iloc[i]``.  In dev mode only the subset
