@@ -136,6 +136,29 @@ class SemanticSearcher:
             return False
 
         self._doc_embeddings = np.load(emb_path, allow_pickle=False)
+
+        # Validate that the two files are consistent.
+        if self._doc_embeddings.shape[0] != len(self._cache_urls):
+            logger.error(
+                "Embedding/metadata mismatch: %d vectors vs %d URLs. "
+                "Cache may be corrupted — delete %s and retry.",
+                self._doc_embeddings.shape[0],
+                len(self._cache_urls),
+                base,
+            )
+            self._doc_embeddings = None
+            self._cache_urls = None
+            return False
+
+        n_unique = len(set(self._cache_urls))
+        if n_unique < len(self._cache_urls):
+            logger.warning(
+                "Metadata contains %d duplicate URLs (total %d). "
+                "Cache may be corrupted.",
+                len(self._cache_urls) - n_unique,
+                len(self._cache_urls),
+            )
+
         logger.info(
             "Loaded embedding cache from %s — %d vectors, %d metadata URLs",
             emb_path,
@@ -148,11 +171,21 @@ class SemanticSearcher:
         """Reorder cached embeddings to match *target_urls*.
 
         Only URLs present in both the cache and *target_urls* are kept.
-        Returns the list of indices into *target_urls* that were matched,
-        so the caller can filter its own data structures to stay in sync.
+        The returned list may be shorter than *target_urls* if some URLs
+        have no cached embedding (e.g. newly added decisions not yet in
+        the cache).  The caller should use these indices to trim its own
+        data structures so that row *i* in the dataframe corresponds to
+        row *i* in the embedding matrix.
+
+        The cached embedding vectors may be in a different order than
+        *target_urls* (``scripts/update_index.py`` sorts by text length
+        for efficient batching).  This method handles the reordering.
         """
         if self._doc_embeddings is None or self._cache_urls is None:
             raise RuntimeError("Call load_embeddings_cache() first.")
+
+        if not target_urls:
+            raise ValueError("target_urls is empty — nothing to align to.")
 
         cache_lookup = {url: i for i, url in enumerate(self._cache_urls)}
 
