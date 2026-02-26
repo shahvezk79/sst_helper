@@ -129,15 +129,16 @@ class SSTNavigatorPipeline:
 
         # Align cached embeddings with the dataframe row ordering.
         target_urls = self._df["url_en"].astype(str).tolist()
+        original_count = len(target_urls)
         matched_indices = self._searcher.align_to_urls(target_urls)
 
-        if len(matched_indices) < len(self._df):
+        if len(matched_indices) < original_count:
             self._df = self._df.iloc[matched_indices].reset_index(drop=True)
             logger.warning(
                 "Only %d of %d decisions had cached embeddings; "
                 "dataframe trimmed to match.",
                 len(matched_indices),
-                len(target_urls),
+                original_count,
             )
 
         logger.info(
