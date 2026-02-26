@@ -108,18 +108,41 @@ class SSTNavigatorPipeline:
         return len(self._df)
 
     def build_index(self, progress_callback=None) -> None:
-        """Load a precomputed embedding index (Stage 1 prep)."""
+        """Download precomputed embeddings and align with the loaded dataframe.
+
+        The cached embedding vectors may be in a different order than the
+        dataframe rows (``update_index.py`` sorts by text length for
+        efficient batching).  This method downloads the cache from
+        HuggingFace, then reorders the vectors so that embedding row *i*
+        corresponds to ``self._df.iloc[i]``.  In dev mode only the subset
+        of vectors matching the loaded rows is kept.
+        """
         if self._df is None:
             raise RuntimeError("Call load_data() first.")
 
-        if self._searcher.load_embeddings_cache(cache_dir=config.EMBEDDING_CACHE_DIR):
-            logger.info("Using cached embeddings; skipping rebuild.")
-            return
+        if not self._searcher.load_embeddings_cache(cache_dir=config.EMBEDDING_CACHE_DIR):
+            raise RuntimeError(
+                "Could not load precomputed embedding cache. "
+                "Check your internet connection or run scripts/update_index.py "
+                "to refresh the local cache before starting the app."
+            )
 
-        raise RuntimeError(
-            "Could not load precomputed embedding cache. "
-            "Check your internet connection or run scripts/update_index.py "
-            "to refresh the local cache before starting the app."
+        # Align cached embeddings with the dataframe row ordering.
+        target_urls = self._df["url_en"].astype(str).tolist()
+        matched_indices = self._searcher.align_to_urls(target_urls)
+
+        if len(matched_indices) < len(self._df):
+            self._df = self._df.iloc[matched_indices].reset_index(drop=True)
+            logger.warning(
+                "Only %d of %d decisions had cached embeddings; "
+                "dataframe trimmed to match.",
+                len(matched_indices),
+                len(target_urls),
+            )
+
+        logger.info(
+            "Index ready — %d decisions with aligned embeddings.",
+            len(self._df),
         )
         
     @property

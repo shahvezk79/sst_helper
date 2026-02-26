@@ -70,6 +70,8 @@ class SemanticSearcher:
         self.tokenizer = None
         # Stored document embeddings (numpy for fast cosine on CPU)
         self._doc_embeddings: np.ndarray | None = None
+        # URL list from the cache, used for alignment then discarded
+        self._cache_urls: list[str] | None = None
 
   # -- Persistent cache --------------------------------------------------
 
@@ -81,7 +83,13 @@ class SemanticSearcher:
         embeddings_file: str = config.EMBEDDING_CACHE_FILE,
         metadata_file: str = config.EMBEDDING_METADATA_FILE,
     ) -> bool:
-        """Load cached embeddings from local disk or Hugging Face dataset cache."""
+        """Load cached embeddings from local disk or Hugging Face dataset cache.
+
+        Downloads the embedding vectors and metadata from the HuggingFace
+        dataset repo if they are not already present locally.  The metadata
+        URL list is stored internally so that :meth:`align_to_urls` can
+        later reorder the vectors to match the active dataframe.
+        """
         base = Path(cache_dir)
         base.mkdir(parents=True, exist_ok=True)
         emb_path = base / embeddings_file
@@ -112,15 +120,65 @@ class SemanticSearcher:
         if not emb_path.exists() or not meta_path.exists():
             return False
 
+        # Parse metadata to get the URL ordering of the cached embeddings.
         try:
-            json.loads(meta_path.read_text(encoding="utf-8"))
+            raw = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception as exc:
             logger.error("Embedding metadata file is invalid JSON: %s", exc)
             return False
 
+        if isinstance(raw, list):
+            self._cache_urls = [str(u) for u in raw]
+        elif isinstance(raw, dict) and "url_en" in raw:
+            self._cache_urls = [str(u) for u in raw["url_en"]]
+        else:
+            logger.error("Unexpected metadata format — expected list or {url_en: [...]}")
+            return False
+
         self._doc_embeddings = np.load(emb_path, allow_pickle=False)
-        logger.info("Loaded embedding cache from %s", emb_path)
+        logger.info(
+            "Loaded embedding cache from %s — %d vectors, %d metadata URLs",
+            emb_path,
+            self._doc_embeddings.shape[0],
+            len(self._cache_urls),
+        )
         return True
+
+    def align_to_urls(self, target_urls: list[str]) -> list[int]:
+        """Reorder cached embeddings to match *target_urls*.
+
+        Only URLs present in both the cache and *target_urls* are kept.
+        Returns the list of indices into *target_urls* that were matched,
+        so the caller can filter its own data structures to stay in sync.
+        """
+        if self._doc_embeddings is None or self._cache_urls is None:
+            raise RuntimeError("Call load_embeddings_cache() first.")
+
+        cache_lookup = {url: i for i, url in enumerate(self._cache_urls)}
+
+        matched_target_indices: list[int] = []
+        matched_cache_indices: list[int] = []
+        for target_idx, url in enumerate(target_urls):
+            cache_idx = cache_lookup.get(url)
+            if cache_idx is not None:
+                matched_target_indices.append(target_idx)
+                matched_cache_indices.append(cache_idx)
+
+        if not matched_cache_indices:
+            raise RuntimeError(
+                "No cached embeddings match the target URL list. "
+                "The cache may be stale — run scripts/update_index.py to refresh."
+            )
+
+        self._doc_embeddings = self._doc_embeddings[np.array(matched_cache_indices)]
+        self._cache_urls = None  # Free memory; no longer needed
+
+        logger.info(
+            "Aligned embeddings: %d of %d target URLs matched.",
+            len(matched_target_indices),
+            len(target_urls),
+        )
+        return matched_target_indices
 
     # -- Model lifecycle ---------------------------------------------------
 

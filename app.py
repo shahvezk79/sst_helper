@@ -125,15 +125,9 @@ with st.sidebar:
             n_rows = pipeline.load_data()
             st.write(f"Loaded **{n_rows}** decisions.")
 
-            # Step 2: embed documents
-            st.write("Embedding documents (this may take a while on first run)…")
-            progress = st.progress(0.0)
-
-            def _update(current, total):
-                progress.progress(current / total)
-
-            pipeline.build_index(progress_callback=_update)
-            progress.progress(1.0)
+            # Step 2: download and align precomputed embeddings
+            st.write("Downloading precomputed embeddings from HuggingFace…")
+            pipeline.build_index(progress_callback=None)
             status.update(label="Pipeline ready!", state="complete")
 
     if "pipeline" in st.session_state and st.session_state.pipeline.is_ready:
