@@ -42,6 +42,10 @@ if "light_states" not in st.session_state:
     }
 if "n_decisions" not in st.session_state:
     st.session_state.n_decisions = 0
+if "last_output" not in st.session_state:
+    st.session_state.last_output = None
+if "case_card_cache" not in st.session_state:
+    st.session_state.case_card_cache = {}
 
 
 # ---------------------------------------------------------------------------
@@ -473,15 +477,31 @@ if search_clicked and query.strip():
     pipeline = get_pipeline()
     pipeline.fast_mode = fast_mode
 
-    with st.spinner("Running search pipeline..."):
-        output = pipeline.search(query.strip())
+    with st.spinner("Running retrieval + reranking..."):
+        output = pipeline.search(query.strip(), include_case_card=False)
+    st.session_state.last_output = output
 
+output = st.session_state.last_output
+if output is not None:
     if output.results:
         st.markdown("#### Top Match")
-        st.markdown(
-            f'<div class="case-card">{_md_to_html(output.case_card)}</div>',
-            unsafe_allow_html=True,
-        )
+        top_result = output.results[0]
+        cache_key = top_result.url or f"rank-1:{top_result.name}:{top_result.date}"
+        cached_card = st.session_state.case_card_cache.get(cache_key)
+
+        if cached_card is None:
+            st.info("Summary is generated on demand to keep search fast.")
+            if st.button("Generate summary for top match", type="primary"):
+                pipeline = get_pipeline()
+                with st.spinner("Generating case-card summary..."):
+                    generated = pipeline.generate_case_card(top_result.full_text)
+                st.session_state.case_card_cache[cache_key] = generated
+                st.rerun()
+        else:
+            st.markdown(
+                f'<div class="case-card">{_md_to_html(cached_card)}</div>',
+                unsafe_allow_html=True,
+            )
 
         st.markdown("#### All Results")
         for r in output.results:

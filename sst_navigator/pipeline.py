@@ -37,7 +37,7 @@ class SearchResult:
 @dataclass
 class PipelineOutput:
     """Everything the UI needs after a search."""
-    case_card: str
+    case_card: str | None = None
     results: list[SearchResult] = field(default_factory=list)
 
 
@@ -178,7 +178,17 @@ class SSTNavigatorPipeline:
 
     # -- Search ------------------------------------------------------------
 
-    def search(self, query: str) -> PipelineOutput:
+    def generate_case_card(self, decision_text: str) -> str:
+        """Generate a case card for a selected decision text on demand."""
+        params = self._active_params()
+        self._load_component("generator")
+        return self._generator.generate_case_card(
+            decision_text,
+            max_tokens=params["generation_max_tokens"],
+            max_chars=params["generation_max_chars"],
+        )
+
+    def search(self, query: str, include_case_card: bool = True) -> PipelineOutput:
         """Run the full two-stage search + generation pipeline.
 
         1. Semantic search (bi-encoder) → top 20 candidates
@@ -236,13 +246,10 @@ class SSTNavigatorPipeline:
                 results=[],
             )
 
-        # ---- Stage 3: Case card generation -------------------------------
-        self._load_component("generator")
-        case_card = self._generator.generate_case_card(
-            top_results[0]["text"],
-            max_tokens=params["generation_max_tokens"],
-            max_chars=params["generation_max_chars"],
-        )
+        # ---- Stage 3: Optional case-card generation ----------------------
+        case_card: str | None = None
+        if include_case_card:
+            case_card = self.generate_case_card(top_results[0]["text"])
 
         # ---- Assemble output ---------------------------------------------
         results = []
