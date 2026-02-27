@@ -131,16 +131,25 @@ def _cache_case_card(cache_key: str, value: str) -> None:
 st.markdown(
     """
 <style>
-    /* ---- Layout ---- */
-    .stApp { max-width: 1020px; margin: 0 auto; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
-    /* ---- Status panel (cockpit lights) ---- */
+    /* ---- Global ---- */
+    .stApp {
+        max-width: 1080px;
+        margin: 0 auto;
+    }
+
+    /* ---- Status panel ---- */
     .status-panel {
-        background: #0d1117;
-        border: 1px solid #21262d;
-        border-radius: 12px;
-        padding: 1.6rem 1rem;
-        margin: 0.5rem 0 1.5rem 0;
+        background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+        border: 1px solid rgba(148, 163, 184, 0.08);
+        border-radius: 16px;
+        padding: 2rem 1.5rem;
+        margin: 0.75rem 0 2rem 0;
+        box-shadow:
+            0 4px 24px rgba(0, 0, 0, 0.12),
+            0 1px 4px rgba(0, 0, 0, 0.08),
+            inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
     .status-row {
         display: flex;
@@ -151,170 +160,309 @@ st.markdown(
         display: flex;
         flex-direction: column;
         align-items: center;
-        min-width: 140px;
+        min-width: 150px;
     }
     .ind {
-        width: 18px; height: 18px;
+        width: 10px; height: 10px;
         border-radius: 50%;
-        margin-bottom: 10px;
-        transition: all 0.3s ease;
+        margin-bottom: 14px;
+        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .ind-off {
-        background: #21262d;
-        border: 2px solid #30363d;
+        background: #334155;
+        border: 2px solid #475569;
     }
     .ind-loading {
-        background: #f0883e;
-        border: 2px solid #f0883e;
-        animation: amber-pulse 0.7s ease-in-out infinite;
+        background: #f59e0b;
+        border: 2px solid #f59e0b;
+        animation: pulse-loading 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
     }
     .ind-on {
-        background: #3fb950;
-        border: 2px solid #3fb950;
-        box-shadow: 0 0 8px #3fb950, 0 0 18px rgba(63,185,80,0.35);
-        animation: green-glow 2.5s ease-in-out infinite;
+        background: #10b981;
+        border: 2px solid #10b981;
+        box-shadow: 0 0 8px rgba(16, 185, 129, 0.6),
+                    0 0 24px rgba(16, 185, 129, 0.25);
+        animation: glow-active 3s ease-in-out infinite;
     }
     .ind-label {
-        font-size: 0.65rem;
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        color: #484f58;
+        font-size: 0.67rem;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        color: #64748b;
         text-transform: uppercase;
-        font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
-    .ind-label-active { color: #3fb950; }
+    .ind-label-active { color: #34d399; }
     .ind-sub {
-        font-size: 0.62rem;
-        color: #484f58;
-        margin-top: 3px;
-        font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+        font-size: 0.7rem;
+        color: #475569;
+        margin-top: 4px;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 500;
     }
-    .ind-sub-active { color: #8b949e; }
+    .ind-sub-active { color: #94a3b8; }
 
-    @keyframes amber-pulse {
-        0%, 100% { box-shadow: 0 0 6px #f0883e, 0 0 14px rgba(240,136,62,0.25); }
-        50%      { box-shadow: 0 0 10px #f0883e, 0 0 22px rgba(240,136,62,0.45); }
+    @keyframes pulse-loading {
+        0%, 100% {
+            box-shadow: 0 0 4px rgba(245, 158, 11, 0.4),
+                        0 0 14px rgba(245, 158, 11, 0.15);
+            opacity: 1;
+        }
+        50% {
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.6),
+                        0 0 22px rgba(245, 158, 11, 0.3);
+            opacity: 0.7;
+        }
     }
-    @keyframes green-glow {
-        0%, 100% { box-shadow: 0 0 8px #3fb950, 0 0 18px rgba(63,185,80,0.35); }
-        50%      { box-shadow: 0 0 12px #3fb950, 0 0 28px rgba(63,185,80,0.45),
-                               0 0 40px rgba(63,185,80,0.12); }
+    @keyframes glow-active {
+        0%, 100% {
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.5),
+                        0 0 20px rgba(16, 185, 129, 0.2);
+        }
+        50% {
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.6),
+                        0 0 32px rgba(16, 185, 129, 0.3);
+        }
     }
 
     /* ---- Hero ---- */
-    .hero-bar {
-        width: 48px; height: 3px;
-        background: #3fb950;
-        border-radius: 2px;
-        margin-bottom: 0.6rem;
+    .hero-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: linear-gradient(135deg,
+            rgba(16, 185, 129, 0.08),
+            rgba(16, 185, 129, 0.03));
+        border: 1px solid rgba(16, 185, 129, 0.18);
+        border-radius: 100px;
+        padding: 5px 14px;
+        font-size: 0.73rem;
+        font-weight: 600;
+        color: #10b981;
+        letter-spacing: 0.03em;
+        margin-bottom: 0.9rem;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     .hero-title {
-        font-size: 1.9rem; font-weight: 800;
-        margin-bottom: 0.15rem;
-        letter-spacing: -0.02em;
+        font-size: 2.25rem;
+        font-weight: 800;
+        margin-bottom: 0.4rem;
+        letter-spacing: -0.035em;
+        line-height: 1.15;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     .hero-sub {
-        font-size: 0.95rem;
-        color: #656d76;
-        margin-bottom: 0.3rem;
+        font-size: 1rem;
+        color: #64748b;
+        margin-bottom: 0.25rem;
+        line-height: 1.55;
+        font-weight: 400;
+        max-width: 600px;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* ---- Section headers ---- */
+    .section-label {
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #94a3b8;
+        margin-bottom: 0.75rem;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .section-title {
+        font-size: 1.15rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin-bottom: 0.6rem;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .section-divider {
+        height: 1px;
+        background: linear-gradient(90deg,
+            #e2e8f0 0%, rgba(226, 232, 240, 0) 100%);
+        margin: 1.75rem 0;
+        border: none;
     }
 
     /* ---- Case card ---- */
     .case-card {
-        background: #f6f8fa;
-        border-left: 4px solid #3fb950;
-        padding: 1.3rem 1.5rem;
-        border-radius: 0 8px 8px 0;
-        line-height: 1.7;
-        font-size: 0.93rem;
+        background: linear-gradient(135deg, #f0fdf4 0%, #f8fafc 100%);
+        border-left: 3px solid #10b981;
+        padding: 1.5rem 1.75rem;
+        border-radius: 0 12px 12px 0;
+        line-height: 1.75;
+        font-size: 0.92rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04),
+                    0 1px 2px rgba(0, 0, 0, 0.02);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
     /* ---- Result header inside expanders ---- */
     .rh {
         display: flex;
         align-items: center;
-        gap: 0.9rem;
-        margin-bottom: 0.6rem;
+        gap: 1rem;
+        margin-bottom: 0.75rem;
     }
     .rh-rank {
-        background: #0d1117; color: #3fb950;
-        min-width: 34px; height: 34px;
-        border-radius: 8px;
+        background: linear-gradient(145deg, #0f172a, #1e293b);
+        color: #34d399;
+        min-width: 36px; height: 36px;
+        border-radius: 10px;
         display: flex; align-items: center; justify-content: center;
-        font-weight: 700; font-size: 0.82rem;
-        font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+        font-weight: 700; font-size: 0.8rem;
+        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
     }
     .rh-meta { flex: 1; }
-    .rh-name { font-weight: 600; font-size: 0.92rem; margin-bottom: 1px; }
-    .rh-date { font-size: 0.78rem; color: #656d76; }
+    .rh-name {
+        font-weight: 600; font-size: 0.92rem; margin-bottom: 2px;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .rh-date {
+        font-size: 0.78rem; color: #64748b;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
     .rh-score { text-align: right; min-width: 80px; }
     .rh-pct {
-        font-size: 0.92rem; font-weight: 700;
-        font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+        font-size: 0.88rem; font-weight: 700;
+        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+        color: #1e293b;
     }
     .score-track {
         width: 80px; height: 4px;
-        background: #d0d7de;
-        border-radius: 2px;
-        margin-top: 4px;
+        background: #e2e8f0;
+        border-radius: 4px;
+        margin-top: 5px;
         overflow: hidden;
     }
     .score-fill {
         height: 100%;
-        background: linear-gradient(90deg, #3fb950, #2ea043);
-        border-radius: 2px;
+        background: linear-gradient(90deg, #10b981, #059669);
+        border-radius: 4px;
+        transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .r-snippet {
-        background: #f6f8fa;
-        border: 1px solid #d8dee4;
-        border-radius: 6px;
-        padding: 0.9rem 1rem;
-        font-size: 0.83rem;
-        color: #424a53;
-        line-height: 1.6;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+        font-size: 0.84rem;
+        color: #475569;
+        line-height: 1.7;
         white-space: pre-wrap;
         word-wrap: break-word;
-        margin: 0.6rem 0;
+        margin: 0.75rem 0;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     .r-link {
-        font-size: 0.83rem; color: #0969da;
-        text-decoration: none; font-weight: 500;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 0.84rem;
+        color: #3b82f6;
+        text-decoration: none;
+        font-weight: 500;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        transition: color 0.2s ease;
     }
-    .r-link:hover { text-decoration: underline; }
+    .r-link:hover {
+        color: #2563eb;
+        text-decoration: underline;
+    }
 
     /* ---- Disclaimer ---- */
     .disclaimer {
-        background: #fff8c5;
-        border: 1px solid #d4a72c;
-        border-radius: 8px;
-        padding: 0.65rem 1rem;
-        font-size: 0.78rem;
-        color: #57534e;
-        line-height: 1.5;
-        margin-bottom: 1rem;
+        background: linear-gradient(135deg, #fffbeb 0%, #fefce8 100%);
+        border: 1px solid #fde68a;
+        border-radius: 10px;
+        padding: 0.75rem 1.15rem;
+        font-size: 0.8rem;
+        color: #92400e;
+        line-height: 1.55;
+        margin-bottom: 1.25rem;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
-    /* ---- Green primary buttons ---- */
+    /* ---- Primary buttons ---- */
     button[data-testid="stBaseButton-primary"] {
-        background-color: #238636 !important;
-        border-color: #238636 !important;
+        background: linear-gradient(145deg, #10b981, #059669) !important;
+        border: none !important;
         color: white !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        box-shadow: 0 1px 3px rgba(16, 185, 129, 0.25),
+                    0 1px 2px rgba(0, 0, 0, 0.06) !important;
     }
     button[data-testid="stBaseButton-primary"]:hover {
-        background-color: #2ea043 !important;
-        border-color: #2ea043 !important;
+        background: linear-gradient(145deg, #059669, #047857) !important;
+        box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3),
+                    0 2px 4px rgba(0, 0, 0, 0.08) !important;
+        transform: translateY(-1px) !important;
+    }
+    button[data-testid="stBaseButton-primary"]:active {
+        transform: translateY(0) !important;
+        box-shadow: 0 1px 2px rgba(16, 185, 129, 0.2) !important;
     }
     button[data-testid="stBaseButton-primary"]:disabled {
-        background-color: #21262d !important;
-        border-color: #30363d !important;
-        color: #484f58 !important;
+        background: #e2e8f0 !important;
+        border: none !important;
+        color: #94a3b8 !important;
         opacity: 1 !important;
+        box-shadow: none !important;
+        transform: none !important;
+    }
+
+    /* ---- Sidebar ---- */
+    [data-testid="stSidebar"] {
+        border-right: 1px solid #e2e8f0 !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stHeading"] {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        letter-spacing: -0.02em;
+    }
+
+    /* ---- Expander ---- */
+    [data-testid="stExpander"] {
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 12px !important;
+        margin-bottom: 0.5rem !important;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03) !important;
+        transition: box-shadow 0.2s ease !important;
+    }
+    [data-testid="stExpander"]:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06) !important;
+    }
+
+    /* ---- Text area ---- */
+    [data-testid="stTextArea"] textarea {
+        border-radius: 8px !important;
+        border-color: #e2e8f0 !important;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+        font-size: 0.9rem !important;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+    }
+    [data-testid="stTextArea"] textarea:focus {
+        border-color: #10b981 !important;
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1) !important;
+    }
+
+    /* ---- Select box ---- */
+    [data-testid="stSelectbox"] > div > div {
+        border-radius: 8px !important;
+        border-color: #e2e8f0 !important;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     }
 
     /* ---- Responsive ---- */
     @media (max-width: 640px) {
-        .status-row { flex-direction: column; gap: 1.2rem; }
+        .status-row { flex-direction: column; gap: 1.5rem; }
         .ind-group { min-width: auto; }
+        .hero-title { font-size: 1.75rem; }
     }
 </style>
 """,
@@ -328,10 +476,11 @@ st.markdown(
 # ---------------------------------------------------------------------------
 
 st.markdown(
-    '<div class="hero-bar"></div>'
+    '<div class="hero-badge">AI-Powered Legal Research</div>'
     '<div class="hero-title">SST Decision Navigator</div>'
     '<div class="hero-sub">'
-    "AI-powered search across Social Security Tribunal decisions"
+    "Search and analyze Social Security Tribunal decisions with semantic AI "
+    "&mdash; find the cases most relevant to your situation."
     "</div>",
     unsafe_allow_html=True,
 )
@@ -440,10 +589,10 @@ with st.sidebar:
 
 st.markdown(
     '<div class="disclaimer">'
-    "<strong>Disclaimer:</strong> This is an educational research tool. "
-    "It does not provide legal advice. Decisions retrieved here may not "
-    "reflect the current state of the law. Consult a licensed professional "
-    "or your local legal-aid clinic for legal help."
+    "<strong>Disclaimer</strong> &mdash; This is an educational research tool "
+    "and does not constitute legal advice. Decisions retrieved may not "
+    "reflect the current state of the law. Please consult a licensed "
+    "professional or your local legal-aid clinic for legal guidance."
     "</div>",
     unsafe_allow_html=True,
 )
@@ -452,6 +601,12 @@ st.markdown(
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
+
+st.markdown(
+    '<div class="section-divider"></div>'
+    '<div class="section-label">Search</div>',
+    unsafe_allow_html=True,
+)
 
 col_a, col_b = st.columns([1, 3])
 
@@ -503,14 +658,19 @@ if search_clicked and query.strip():
 output = st.session_state.last_output
 if output is not None:
     if output.results:
-        st.markdown("#### Top Match")
+        st.markdown(
+            '<div class="section-divider"></div>'
+            '<div class="section-label">Results</div>'
+            '<div class="section-title">Top Match</div>',
+            unsafe_allow_html=True,
+        )
         top_result = output.results[0]
         base_cache_key = top_result.url or f"rank-1:{top_result.name}:{top_result.date}"
         cache_key = _generation_cache_key(base_cache_key, gen_backend, fast_mode)
         cached_card = st.session_state.case_card_cache.get(cache_key)
 
         if cached_card is None:
-            st.info("Summary is generated on demand to keep search fast.")
+            st.caption("Summary is generated on demand to keep search fast.")
             if st.button("Generate summary for top match", type="primary"):
                 pipeline = get_pipeline()
                 pipeline.set_generation_backend(gen_backend)
@@ -525,7 +685,11 @@ if output is not None:
                 unsafe_allow_html=True,
             )
 
-        st.markdown("#### All Results")
+        st.markdown(
+            '<div class="section-title" style="margin-top: 1.5rem;">'
+            "All Results</div>",
+            unsafe_allow_html=True,
+        )
         for r in output.results:
             pct = r.reranker_score * 100
             pct_s = f"{pct:.1f}%"
