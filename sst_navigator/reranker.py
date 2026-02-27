@@ -12,6 +12,7 @@ from mlx_lm import load as mlx_lm_load
 from transformers import AutoTokenizer
 
 from . import config
+from .section_parser import pack_for_reranker
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +119,8 @@ class Reranker:
         """
         logger.info("Reranking %d candidates …", len(candidates))
         for cand in candidates:
-            # Truncate document text to stay within context window
-            doc_text = cand["text"][:max_tokens * 4]
+            # Pack legally salient sections into the context window
+            doc_text = pack_for_reranker(cand["text"], char_budget=max_tokens * 4)
             cand["reranker_score"] = self._score_one(query, doc_text)
             logger.debug(
                 "  candidate %s → %.4f", cand.get("name", "?"), cand["reranker_score"]

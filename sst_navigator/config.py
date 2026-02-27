@@ -9,13 +9,13 @@ RERANKER_MODEL = "mlx-community/Qwen3-Reranker-4B-mxfp8"
 GENERATION_MODEL = "mlx-community/Qwen3-4B-4bit"
 
 # --- Pipeline parameters ---
-STAGE1_TOP_K = 20          # Candidates from semantic search
-STAGE2_TOP_K = 3           # Final results after reranking
+STAGE1_TOP_K = 40          # Candidates from semantic search
+STAGE2_TOP_K = 5           # Final results after reranking
 SNIPPET_LENGTH = 500       # Characters for the preview snippet
 
 # Fast mode keeps quality reasonably high while reducing latency
-FAST_STAGE1_TOP_K = 10
-FAST_STAGE2_TOP_K = 2
+FAST_STAGE1_TOP_K = 20
+FAST_STAGE2_TOP_K = 3
 
 # --- Embedding parameters ---
 EMBEDDING_INSTRUCTION = (
