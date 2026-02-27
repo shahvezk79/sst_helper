@@ -191,8 +191,8 @@ class SSTNavigatorPipeline:
     def search(self, query: str, include_case_card: bool = True) -> PipelineOutput:
         """Run the full two-stage search + generation pipeline.
 
-        1. Semantic search (bi-encoder) → top 20 candidates
-        2. Rerank (cross-encoder)       → top 3
+        1. Semantic search (bi-encoder) → top 40 candidates
+        2. Rerank (cross-encoder)       → top 5
         3. Generate case card for #1
 
         Returns a PipelineOutput with the case card and result list.
