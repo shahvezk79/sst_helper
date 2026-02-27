@@ -22,6 +22,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+MAX_CASE_CARD_CACHE_ENTRIES = 20
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -107,6 +109,20 @@ def _md_to_html(text: str) -> str:
     safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
     safe = safe.replace("\n", "<br>")
     return safe
+
+
+def _generation_cache_key(base_key: str, backend: str, fast_mode: bool) -> str:
+    """Build a cache key tied to generation-related settings."""
+    return f"{base_key}|backend={backend}|fast_mode={fast_mode}"
+
+
+def _cache_case_card(cache_key: str, value: str) -> None:
+    """Store a case-card in bounded cache (FIFO eviction)."""
+    cache = st.session_state.case_card_cache
+    cache[cache_key] = value
+    while len(cache) > MAX_CASE_CARD_CACHE_ENTRIES:
+        oldest = next(iter(cache))
+        del cache[oldest]
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +377,9 @@ with st.sidebar:
         pipeline.set_generation_backend(gen_backend)
         pipeline.fast_mode = fast_mode
 
+        st.session_state.last_output = None
+        st.session_state.case_card_cache.clear()
+
         try:
             # -- DATA FEED ------------------------------------------------
             st.session_state.light_states = {
@@ -486,16 +505,19 @@ if output is not None:
     if output.results:
         st.markdown("#### Top Match")
         top_result = output.results[0]
-        cache_key = top_result.url or f"rank-1:{top_result.name}:{top_result.date}"
+        base_cache_key = top_result.url or f"rank-1:{top_result.name}:{top_result.date}"
+        cache_key = _generation_cache_key(base_cache_key, gen_backend, fast_mode)
         cached_card = st.session_state.case_card_cache.get(cache_key)
 
         if cached_card is None:
             st.info("Summary is generated on demand to keep search fast.")
             if st.button("Generate summary for top match", type="primary"):
                 pipeline = get_pipeline()
+                pipeline.set_generation_backend(gen_backend)
+                pipeline.fast_mode = fast_mode
                 with st.spinner("Generating case-card summary..."):
                     generated = pipeline.generate_case_card(top_result.full_text)
-                st.session_state.case_card_cache[cache_key] = generated
+                _cache_case_card(cache_key, generated)
                 st.rerun()
         else:
             st.markdown(
