@@ -383,6 +383,27 @@ def main() -> None:
     existing_embeddings, existing_urls = _load_existing_cache(
         cache_dir, emb_path, meta_path, args.repo_id, args.repo_type,
     )
+    # Deduplicate existing cache so duplicates from prior runs don't persist
+    # or get re-written into the merged output.
+    if existing_embeddings is not None:
+        n_unique = len(set(existing_urls))
+        if n_unique < len(existing_urls):
+            n_dups = len(existing_urls) - n_unique
+            logger.warning(
+                "Existing cache has %d duplicate URLs — deduplicating.", n_dups,
+            )
+            seen: set[str] = set()
+            keep: list[int] = []
+            for i, url in enumerate(existing_urls):
+                if url not in seen:
+                    seen.add(url)
+                    keep.append(i)
+            existing_embeddings = existing_embeddings[np.array(keep)]
+            existing_urls = [existing_urls[i] for i in keep]
+            # Persist the clean cache so future runs start clean
+            np.save(emb_path, existing_embeddings)
+            _write_metadata(meta_path, existing_urls)
+
     existing_url_set = set(existing_urls)
     logger.info("Existing cache: %d embeddings.", len(existing_urls))
 

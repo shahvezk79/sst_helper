@@ -152,12 +152,21 @@ class SemanticSearcher:
 
         n_unique = len(set(self._cache_urls))
         if n_unique < len(self._cache_urls):
+            n_dups = len(self._cache_urls) - n_unique
             logger.warning(
                 "Metadata contains %d duplicate URLs (total %d). "
-                "Cache may be corrupted.",
-                len(self._cache_urls) - n_unique,
+                "Deduplicating — keeping first occurrence of each URL.",
+                n_dups,
                 len(self._cache_urls),
             )
+            seen: set[str] = set()
+            keep: list[int] = []
+            for i, url in enumerate(self._cache_urls):
+                if url not in seen:
+                    seen.add(url)
+                    keep.append(i)
+            self._doc_embeddings = self._doc_embeddings[np.array(keep)]
+            self._cache_urls = [self._cache_urls[i] for i in keep]
 
         logger.info(
             "Loaded embedding cache from %s — %d vectors, %d metadata URLs",
@@ -205,6 +214,17 @@ class SemanticSearcher:
 
         self._doc_embeddings = self._doc_embeddings[np.array(matched_cache_indices)]
         self._cache_urls = None  # Free memory; no longer needed
+
+        # Sanitize: zero out any rows containing NaN or Inf so they don't
+        # produce RuntimeWarnings during the matmul in search().
+        bad_mask = ~np.isfinite(self._doc_embeddings).all(axis=1)
+        n_bad = int(bad_mask.sum())
+        if n_bad:
+            logger.warning(
+                "%d embedding vectors contain NaN/Inf — replacing with zeros.",
+                n_bad,
+            )
+            self._doc_embeddings[bad_mask] = 0.0
 
         logger.info(
             "Aligned embeddings: %d of %d target URLs matched.",
