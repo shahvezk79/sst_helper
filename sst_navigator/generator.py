@@ -11,6 +11,7 @@ Supports four backends:
 
 import logging
 import os
+import re
 
 from . import config
 
@@ -26,6 +27,20 @@ _CASE_CARD_SYSTEM = (
     "**Outcome:** (What did the tribunal decide, and why?)\n\n"
     "Be concise. Use simple language. Do not invent facts."
 )
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _sanitize_case_card_output(text: str) -> str:
+    """Remove hidden reasoning text and keep only the user-facing summary."""
+    sanitized = _THINK_BLOCK_RE.sub("", text)
+
+    expected_sections = ("**Issue:**", "**Key Facts:**", "**Test Applied:**", "**Outcome:**")
+    first_section_pos = [sanitized.find(section) for section in expected_sections if section in sanitized]
+    if first_section_pos:
+        sanitized = sanitized[min(first_section_pos) :]
+
+    return sanitized.strip()
 
 
 def _build_prompt(
@@ -122,7 +137,7 @@ class CaseCardGenerator:
             max_tokens=max_tokens,
             verbose=False,
         )
-        return response.strip()
+        return _sanitize_case_card_output(response)
 
     # -- OpenAI ------------------------------------------------------------
 
@@ -153,7 +168,7 @@ class CaseCardGenerator:
             max_tokens=max_tokens,
             temperature=0.3,
         )
-        return resp.choices[0].message.content.strip()
+        return _sanitize_case_card_output(resp.choices[0].message.content)
 
     # -- Gemini ------------------------------------------------------------
 
@@ -185,7 +200,7 @@ class CaseCardGenerator:
                 temperature=0.3,
             ),
         )
-        return resp.text.strip()
+        return _sanitize_case_card_output(resp.text)
 
     # -- DeepInfra ---------------------------------------------------------
 
@@ -219,4 +234,4 @@ class CaseCardGenerator:
             max_tokens=max_tokens,
             temperature=0.3,
         )
-        return resp.choices[0].message.content.strip()
+        return _sanitize_case_card_output(resp.choices[0].message.content)
