@@ -42,7 +42,11 @@ _hf_hub.hf_hub_download = None  # type: ignore[attr-defined]
 _transformers = _stub("transformers")
 _transformers.AutoTokenizer = None  # type: ignore[attr-defined]
 
-from sst_navigator.embedder import _sanitize_embedding_batch, _l2_normalize_rows  # noqa: E402
+from sst_navigator.embedder import (  # noqa: E402
+    _sanitize_embedding_batch,
+    _l2_normalize_rows,
+    _sanitize_and_normalize_rows,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -181,3 +185,44 @@ class TestL2NormalizeRows:
             scores = docs_normed @ query_normed.T
         assert np.all(np.isfinite(scores))
         assert np.all(np.abs(scores) <= 1.0 + 1e-6)
+
+
+class TestSanitizeAndNormalizeRows:
+    def test_replaces_invalid_values_then_normalizes(self):
+        rows = np.array(
+            [[np.inf, 2.0, 0.0], [np.nan, -1.0, 1.0], [3.0, 4.0, 0.0]],
+            dtype=np.float32,
+        )
+
+        result = _sanitize_and_normalize_rows(rows)
+
+        assert np.all(np.isfinite(result))
+        norms = np.linalg.norm(result, axis=1)
+        np.testing.assert_allclose(norms, [1.0, 1.0, 1.0], atol=1e-6)
+
+    def test_zero_vectors_stay_zero(self):
+        rows = np.array([[0.0, 0.0], [np.nan, np.nan]], dtype=np.float32)
+
+        result = _sanitize_and_normalize_rows(rows)
+
+        np.testing.assert_array_equal(result, np.array([[0.0, 0.0], [0.0, 0.0]], dtype=np.float32))
+
+    def test_warning_emitted_when_sanitization_changes_values(self, caplog):
+        import logging
+
+        rows = np.array([[1.0, np.inf], [np.nan, 0.0]], dtype=np.float32)
+
+        with caplog.at_level(logging.WARNING, logger="sst_navigator.embedder"):
+            _sanitize_and_normalize_rows(rows)
+
+        assert any("Sanitizing" in r.message for r in caplog.records)
+
+    def test_no_warning_when_rows_are_finite(self, caplog):
+        import logging
+
+        rows = np.array([[3.0, 4.0], [1.0, 0.0]], dtype=np.float32)
+
+        with caplog.at_level(logging.WARNING, logger="sst_navigator.embedder"):
+            _sanitize_and_normalize_rows(rows)
+
+        assert not any("Sanitizing" in r.message for r in caplog.records)

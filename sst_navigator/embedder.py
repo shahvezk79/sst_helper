@@ -57,6 +57,27 @@ def _l2_normalize_rows(arr: np.ndarray) -> np.ndarray:
     return (arr64 / norms).astype(np.float32)
 
 
+def _sanitize_and_normalize_rows(arr: np.ndarray) -> np.ndarray:
+    """Return a sanitized + unit-normalized copy of *arr*.
+
+    This is the one-time preparation step for embedding matrices loaded
+    from cache or produced by MLX.  Keeping this off the query hot path
+    avoids repeated O(n·d) work on every search.
+    """
+    non_finite_mask = ~np.isfinite(arr)
+    n_non_finite = int(non_finite_mask.sum())
+    if n_non_finite:
+        n_bad_rows = int(non_finite_mask.any(axis=1).sum())
+        logger.warning(
+            "Sanitizing %d non-finite embedding values across %d rows.",
+            n_non_finite,
+            n_bad_rows,
+        )
+
+    clean = np.nan_to_num(arr, copy=True, nan=0.0, posinf=0.0, neginf=0.0)
+    return _l2_normalize_rows(clean)
+
+
 # ---------------------------------------------------------------------------
 # Qwen3 embedding model wrapper — strips lm_head so we get hidden states
 # ---------------------------------------------------------------------------
@@ -255,24 +276,9 @@ class SemanticSearcher:
         self._doc_embeddings = self._doc_embeddings[np.array(matched_cache_indices)]
         self._cache_urls = None  # Free memory; no longer needed
 
-        # Sanitize: zero out any rows containing NaN or Inf so they don't
-        # poison the subsequent L2 re-normalisation.
-        bad_mask = ~np.isfinite(self._doc_embeddings).all(axis=1)
-        n_bad = int(bad_mask.sum())
-        if n_bad:
-            logger.warning(
-                "%d embedding vectors contain NaN/Inf — replacing with zeros.",
-                n_bad,
-            )
-            self._doc_embeddings[bad_mask] = 0.0
-
-        # Re-normalise to unit length.  The fp8-quantised embedding model
-        # performs L2 normalisation in reduced-precision MLX arithmetic, so
-        # cached vectors may have norms that drift from 1.0.  Without
-        # re-normalisation the dot-product can overflow float32 during
-        # matmul, producing RuntimeWarnings (divide-by-zero, overflow,
-        # invalid value).
-        self._doc_embeddings = _l2_normalize_rows(self._doc_embeddings)
+        # One-time sanitisation + re-normalisation on load/alignment.
+        # Cached fp8 vectors can contain invalid values or norm drift.
+        self._doc_embeddings = _sanitize_and_normalize_rows(self._doc_embeddings)
 
         logger.info(
             "Aligned embeddings: %d of %d target URLs matched.",
@@ -413,7 +419,7 @@ class SemanticSearcher:
         )
         # Re-normalise to ensure unit length (MLX fp8 normalisation can
         # be imprecise), matching what align_to_urls does for cached vectors.
-        self._doc_embeddings = _l2_normalize_rows(self._doc_embeddings)
+        self._doc_embeddings = _sanitize_and_normalize_rows(self._doc_embeddings)
         logger.info(
             "Document embeddings cached — shape %s", self._doc_embeddings.shape
         )
@@ -447,7 +453,7 @@ class SemanticSearcher:
 
         # Replace any residual NaN (e.g. 0-vec · 0-vec) with -1 so they
         # sort last instead of polluting argsort.
-        np.nan_to_num(scores, copy=False, nan=-1.0)
+        np.nan_to_num(scores, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
 
         top_indices = np.argsort(scores)[::-1][:top_k]
         return [(int(i), float(scores[i])) for i in top_indices]
