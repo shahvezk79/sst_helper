@@ -215,16 +215,22 @@ class SemanticSearcher:
         self._doc_embeddings = self._doc_embeddings[np.array(matched_cache_indices)]
         self._cache_urls = None  # Free memory; no longer needed
 
-        # Sanitize: zero out any rows containing NaN or Inf so they don't
-        # produce RuntimeWarnings during the matmul in search().
+        # Sanitize: replace NaN/Inf with zeros, then re-normalise all
+        # vectors to unit length.  Cached vectors may have non-unit norms
+        # (e.g. from an older pipeline version or a partial write), and
+        # large-magnitude vectors cause overflow warnings in the matmul.
         bad_mask = ~np.isfinite(self._doc_embeddings).all(axis=1)
-        n_bad = int(bad_mask.sum())
-        if n_bad:
+        if bad_mask.any():
             logger.warning(
                 "%d embedding vectors contain NaN/Inf — replacing with zeros.",
-                n_bad,
+                int(bad_mask.sum()),
             )
             self._doc_embeddings[bad_mask] = 0.0
+
+        norms = np.linalg.norm(self._doc_embeddings, axis=1, keepdims=True)
+        # Avoid division by zero for all-zero rows; they'll stay zero.
+        norms = np.maximum(norms, 1e-9)
+        self._doc_embeddings = (self._doc_embeddings / norms).astype(np.float32)
 
         logger.info(
             "Aligned embeddings: %d of %d target URLs matched.",
