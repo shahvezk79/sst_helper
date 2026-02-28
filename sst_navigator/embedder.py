@@ -411,6 +411,9 @@ class SemanticSearcher:
             max_tokens=max_tokens,
             progress_callback=progress_callback,
         )
+        # Re-normalise to ensure unit length (MLX fp8 normalisation can
+        # be imprecise), matching what align_to_urls does for cached vectors.
+        self._doc_embeddings = _l2_normalize_rows(self._doc_embeddings)
         logger.info(
             "Document embeddings cached — shape %s", self._doc_embeddings.shape
         )
