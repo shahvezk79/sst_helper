@@ -19,3 +19,8 @@ streamlit>=1.35
 # Uncomment one:
 # openai>=1.30
 # google-generativeai>=0.5
+
+# Optional: Cloud compute via DeepInfra
+# (openai is also needed for DeepInfra generation — same client, different base_url)
+# requests>=2.31
+# openai>=1.30
