@@ -206,3 +206,23 @@ class TestSanitizeAndNormalizeRows:
         result = _sanitize_and_normalize_rows(rows)
 
         np.testing.assert_array_equal(result, np.array([[0.0, 0.0], [0.0, 0.0]], dtype=np.float32))
+
+    def test_warning_emitted_when_sanitization_changes_values(self, caplog):
+        import logging
+
+        rows = np.array([[1.0, np.inf], [np.nan, 0.0]], dtype=np.float32)
+
+        with caplog.at_level(logging.WARNING, logger="sst_navigator.embedder"):
+            _sanitize_and_normalize_rows(rows)
+
+        assert any("Sanitizing" in r.message for r in caplog.records)
+
+    def test_no_warning_when_rows_are_finite(self, caplog):
+        import logging
+
+        rows = np.array([[3.0, 4.0], [1.0, 0.0]], dtype=np.float32)
+
+        with caplog.at_level(logging.WARNING, logger="sst_navigator.embedder"):
+            _sanitize_and_normalize_rows(rows)
+
+        assert not any("Sanitizing" in r.message for r in caplog.records)

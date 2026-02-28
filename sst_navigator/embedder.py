@@ -64,6 +64,16 @@ def _sanitize_and_normalize_rows(arr: np.ndarray) -> np.ndarray:
     from cache or produced by MLX.  Keeping this off the query hot path
     avoids repeated O(n·d) work on every search.
     """
+    non_finite_mask = ~np.isfinite(arr)
+    n_non_finite = int(non_finite_mask.sum())
+    if n_non_finite:
+        n_bad_rows = int(non_finite_mask.any(axis=1).sum())
+        logger.warning(
+            "Sanitizing %d non-finite embedding values across %d rows.",
+            n_non_finite,
+            n_bad_rows,
+        )
+
     clean = np.nan_to_num(arr, copy=True, nan=0.0, posinf=0.0, neginf=0.0)
     return _l2_normalize_rows(clean)
 
