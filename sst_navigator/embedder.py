@@ -237,14 +237,7 @@ class SemanticSearcher:
 
         # Sanitize: zero out any rows containing NaN or Inf so they don't
         # produce RuntimeWarnings during the matmul in search().
-        bad_mask = ~np.isfinite(self._doc_embeddings).all(axis=1)
-        n_bad = int(bad_mask.sum())
-        if n_bad:
-            logger.warning(
-                "%d embedding vectors contain NaN/Inf — replacing with zeros.",
-                n_bad,
-            )
-            self._doc_embeddings[bad_mask] = 0.0
+        _sanitize_embedding_batch(self._doc_embeddings)
 
         logger.info(
             "Aligned embeddings: %d of %d target URLs matched.",
