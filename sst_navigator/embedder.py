@@ -19,6 +19,26 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_embedding_batch(result: np.ndarray) -> None:
+    """Zero out rows containing NaN/Inf in *result* in-place.
+
+    Called after converting MLX tensors to numpy so that downstream
+    matmul operations never encounter invalid float values.  Rows
+    replaced with zeros will produce a cosine similarity of 0 and
+    effectively rank last in search results.
+    """
+    bad_rows = ~np.isfinite(result).all(axis=1)
+    if bad_rows.any():
+        n_bad = int(bad_rows.sum())
+        logger.warning(
+            "%d of %d embedding vectors contain NaN/Inf — replacing with zeros.",
+            n_bad,
+            result.shape[0],
+        )
+        result[bad_rows] = 0.0
+
+
 # ---------------------------------------------------------------------------
 # Qwen3 embedding model wrapper — strips lm_head so we get hidden states
 # ---------------------------------------------------------------------------
@@ -288,19 +308,10 @@ class SemanticSearcher:
 
         result = np.array(normed, dtype=np.float32)
 
-        # Sanitize: zero out rows containing NaN/Inf that can arise from
-        # fp8-quantised hidden states overflowing during normalisation
-        # (Inf → norm=Inf → Inf/Inf = NaN).  Zero rows yield cosine
-        # similarity of 0, effectively excluding them from results.
-        bad_rows = ~np.isfinite(result).all(axis=1)
-        if bad_rows.any():
-            n_bad = int(bad_rows.sum())
-            logger.warning(
-                "%d of %d embedding vectors contain NaN/Inf — replacing with zeros.",
-                n_bad,
-                result.shape[0],
-            )
-            result[bad_rows] = 0.0
+        # Sanitize: fp8-quantised hidden states can overflow during
+        # normalisation (Inf → norm=Inf → Inf/Inf = NaN) causing
+        # RuntimeWarnings in the downstream matmul.
+        _sanitize_embedding_batch(result)
 
         # Eagerly free large MLX tensors so Metal memory is reclaimable
         # *before* the next batch allocates.  Without this, hidden_states
