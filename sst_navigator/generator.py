@@ -2,17 +2,15 @@
 Case-card generator — produces a plain-language four-section summary
 of a top-ranked SST decision.
 
-Supports three backends:
+Supports four backends:
   1. Local MLX model (default) — runs entirely on Apple Silicon.
   2. OpenAI API — set OPENAI_API_KEY in env.
   3. Google Gemini API — set GOOGLE_API_KEY in env.
+  4. DeepInfra API — set DEEPINFRA_API_KEY in env.
 """
 
 import logging
 import os
-
-import mlx.core as mx
-from mlx_lm import load as mlx_lm_load, generate as mlx_generate
 
 from . import config
 
@@ -51,7 +49,7 @@ class CaseCardGenerator:
     def __init__(self, backend: str = "mlx"):
         """
         Args:
-            backend: One of "mlx", "openai", or "gemini".
+            backend: One of "mlx", "openai", "gemini", or "deepinfra".
         """
         self.backend = backend
         self._model = None
@@ -63,6 +61,9 @@ class CaseCardGenerator:
         """Load the local MLX generation model."""
         if self.backend != "mlx":
             return
+
+        from mlx_lm import load as mlx_lm_load
+
         logger.info("Loading generation model %s …", config.GENERATION_MODEL)
         try:
             self._model, self._tokenizer = mlx_lm_load(config.GENERATION_MODEL)
@@ -72,6 +73,11 @@ class CaseCardGenerator:
             raise
 
     def unload_model(self) -> None:
+        if self.backend != "mlx":
+            return
+
+        import mlx.core as mx
+
         self._model = None
         self._tokenizer = None
         mx.metal.clear_cache()
@@ -92,6 +98,8 @@ class CaseCardGenerator:
             return self._generate_openai(decision_text, max_tokens=max_tokens, max_chars=max_chars)
         if self.backend == "gemini":
             return self._generate_gemini(decision_text, max_tokens=max_tokens, max_chars=max_chars)
+        if self.backend == "deepinfra":
+            return self._generate_deepinfra(decision_text, max_tokens=max_tokens, max_chars=max_chars)
         raise ValueError(f"Unknown backend: {self.backend}")
 
     # -- MLX ---------------------------------------------------------------
@@ -102,6 +110,8 @@ class CaseCardGenerator:
         max_tokens: int = config.GENERATION_MAX_TOKENS,
         max_chars: int = config.GENERATION_MAX_CHARS,
     ) -> str:
+        from mlx_lm import generate as mlx_generate
+
         if self._model is None:
             raise RuntimeError("Call load_model() first.")
         prompt = _build_prompt(decision_text, max_chars=max_chars)
@@ -176,3 +186,37 @@ class CaseCardGenerator:
             ),
         )
         return resp.text.strip()
+
+    # -- DeepInfra ---------------------------------------------------------
+
+    def _generate_deepinfra(
+        self,
+        decision_text: str,
+        max_tokens: int = config.GENERATION_MAX_TOKENS,
+        max_chars: int = config.GENERATION_MAX_CHARS,
+    ) -> str:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError("pip install openai  to use the DeepInfra backend.")
+
+        api_key = os.environ.get("DEEPINFRA_API_KEY")
+        if not api_key:
+            raise RuntimeError("Set DEEPINFRA_API_KEY in your environment.")
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=config.DEEPINFRA_BASE_URL,
+        )
+        truncated = decision_text[:max_chars]
+
+        resp = client.chat.completions.create(
+            model=config.DEEPINFRA_GENERATION_MODEL,
+            messages=[
+                {"role": "system", "content": _CASE_CARD_SYSTEM},
+                {"role": "user", "content": f"Here is the tribunal decision:\n\n{truncated}"},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.3,
+        )
+        return resp.choices[0].message.content.strip()

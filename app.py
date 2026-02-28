@@ -60,6 +60,7 @@ def get_pipeline() -> SSTNavigatorPipeline:
         st.session_state.pipeline = SSTNavigatorPipeline(
             dev_mode=True,
             generation_backend="mlx",
+            compute_mode="local",
             fast_mode=False,
         )
     return st.session_state.pipeline
@@ -501,12 +502,28 @@ with st.sidebar:
         value=True,
         help="Load only 500 decisions for faster startup.",
     )
-    gen_backend = st.selectbox(
-        "Summary backend",
-        ["mlx", "openai", "gemini"],
+
+    compute_mode = st.radio(
+        "Compute",
+        ["Local (MLX)", "Cloud (DeepInfra)"],
         index=0,
-        help="'mlx' = fully local. Others need an API key in env.",
+        help=(
+            "**Local** runs reranking and generation on Apple Silicon. "
+            "**Cloud** sends both to DeepInfra APIs (set DEEPINFRA_API_KEY)."
+        ),
     )
+    compute_key = "local" if "Local" in compute_mode else "cloud"
+
+    if compute_key == "local":
+        gen_backend = st.selectbox(
+            "Summary backend",
+            ["mlx", "openai", "gemini"],
+            index=0,
+            help="'mlx' = fully local. Others need an API key in env.",
+        )
+    else:
+        gen_backend = "deepinfra"
+
     fast_mode = st.toggle(
         "Fast mode",
         value=False,
@@ -523,6 +540,7 @@ with st.sidebar:
     if st.button(btn_label, type="primary", use_container_width=True):
         pipeline = get_pipeline()
         pipeline.dev_mode = dev_mode
+        pipeline.set_compute_mode(compute_key)
         pipeline.set_generation_backend(gen_backend)
         pipeline.fast_mode = fast_mode
 

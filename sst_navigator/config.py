@@ -47,5 +47,13 @@ FAST_GENERATION_MAX_TOKENS = 256
 GENERATION_MAX_CHARS = 24000
 FAST_GENERATION_MAX_CHARS = 12000
 
+# --- DeepInfra cloud settings ---
+DEEPINFRA_RERANKER_MODEL = "Qwen/Qwen3-Reranker-4B"
+DEEPINFRA_GENERATION_MODEL = "Qwen/Qwen3-14B"
+DEEPINFRA_RERANKER_ENDPOINT = (
+    "https://api.deepinfra.com/v1/inference/Qwen/Qwen3-Reranker-4B"
+)
+DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
+
 # --- Data ---
 DEV_ROW_LIMIT = 500  # Row limit for development/testing

@@ -48,15 +48,19 @@ class SSTNavigatorPipeline:
         self,
         dev_mode: bool = True,
         generation_backend: str = "mlx",
+        compute_mode: str = "local",
         fast_mode: bool = False,
     ):
         self.dev_mode = dev_mode
+        self.compute_mode = compute_mode
         self.generation_backend = generation_backend
         self.fast_mode = fast_mode
 
+        reranker_backend = "deepinfra" if compute_mode == "cloud" else "mlx"
+
         self._df: pd.DataFrame | None = None
         self._searcher = SemanticSearcher()
-        self._reranker = Reranker()
+        self._reranker = Reranker(backend=reranker_backend)
         self._generator = CaseCardGenerator(backend=generation_backend)
 
         # Track which heavy model is currently loaded
@@ -77,6 +81,28 @@ class SSTNavigatorPipeline:
         # Force a fresh component load on next search.
         if self._loaded == "generator":
             self._loaded = None
+
+    def set_compute_mode(self, mode: str) -> None:
+        """Switch between local (MLX) and cloud (DeepInfra) compute.
+
+        When cloud is selected, both reranker and generator use
+        DeepInfra APIs — no local models need to be loaded for those
+        stages.
+        """
+        if mode == self.compute_mode:
+            return
+
+        # Tear down any locally-loaded reranker / generator.
+        if self._loaded == "reranker":
+            self._reranker.unload_model()
+            self._loaded = None
+        elif self._loaded == "generator":
+            self._generator.unload_model()
+            self._loaded = None
+
+        self.compute_mode = mode
+        reranker_backend = "deepinfra" if mode == "cloud" else "mlx"
+        self._reranker = Reranker(backend=reranker_backend)
 
 
     def _active_params(self) -> dict:
@@ -153,11 +179,22 @@ class SSTNavigatorPipeline:
     # -- Memory management -------------------------------------------------
 
     def _load_component(self, name: str) -> None:
-        """Ensure only one heavy model is in memory at a time."""
+        """Ensure only one heavy model is in memory at a time.
+
+        Cloud-backed components (DeepInfra) don't load local models, so
+        we skip the memory swap to keep the previous local model
+        resident (typically the embedder for query encoding).
+        """
         if self._loaded == name:
             return
 
-        # Unload current model
+        # Cloud-backed stages have no local model — skip the swap.
+        if name == "reranker" and self._reranker.backend != "mlx":
+            return
+        if name == "generator" and self._generator.backend != "mlx":
+            return
+
+        # Unload current local model
         if self._loaded == "embedder":
             self._searcher.unload_model()
         elif self._loaded == "reranker":
