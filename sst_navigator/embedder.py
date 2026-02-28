@@ -288,6 +288,20 @@ class SemanticSearcher:
 
         result = np.array(normed, dtype=np.float32)
 
+        # Sanitize: zero out rows containing NaN/Inf that can arise from
+        # fp8-quantised hidden states overflowing during normalisation
+        # (Inf → norm=Inf → Inf/Inf = NaN).  Zero rows yield cosine
+        # similarity of 0, effectively excluding them from results.
+        bad_rows = ~np.isfinite(result).all(axis=1)
+        if bad_rows.any():
+            n_bad = int(bad_rows.sum())
+            logger.warning(
+                "%d of %d embedding vectors contain NaN/Inf — replacing with zeros.",
+                n_bad,
+                result.shape[0],
+            )
+            result[bad_rows] = 0.0
+
         # Eagerly free large MLX tensors so Metal memory is reclaimable
         # *before* the next batch allocates.  Without this, hidden_states
         # (~235 MB at batch_size=4 / 8192 tokens) lingers until Python's
