@@ -39,6 +39,24 @@ def _sanitize_embedding_batch(result: np.ndarray) -> None:
         result[bad_rows] = 0.0
 
 
+def _l2_normalize_rows(arr: np.ndarray) -> np.ndarray:
+    """Return a copy of *arr* with every row L2-normalised.
+
+    Zero-norm rows (e.g. previously sanitised bad vectors) are left as
+    zeros rather than producing NaN from 0/0.  This guarantees that the
+    dot-product of any two rows stays in [-1, 1] and cannot overflow
+    float32 during matmul accumulation.
+
+    The norm is computed in float64 to avoid overflow when squaring
+    large float32 values (e.g. 1e20² exceeds float32 max).
+    """
+    arr64 = arr.astype(np.float64)
+    norms = np.linalg.norm(arr64, axis=1, keepdims=True)
+    # Clamp to avoid 0/0; zero-norm rows stay as zeros.
+    norms = np.maximum(norms, 1e-12)
+    return (arr64 / norms).astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
 # Qwen3 embedding model wrapper — strips lm_head so we get hidden states
 # ---------------------------------------------------------------------------
@@ -155,7 +173,9 @@ class SemanticSearcher:
             logger.error("Unexpected metadata format — expected list or {url_en: [...]}")
             return False
 
-        self._doc_embeddings = np.load(emb_path, allow_pickle=False)
+        self._doc_embeddings = np.load(emb_path, allow_pickle=False).astype(
+            np.float32, copy=False,
+        )
 
         # Validate that the two files are consistent.
         if self._doc_embeddings.shape[0] != len(self._cache_urls):
@@ -236,7 +256,7 @@ class SemanticSearcher:
         self._cache_urls = None  # Free memory; no longer needed
 
         # Sanitize: zero out any rows containing NaN or Inf so they don't
-        # produce RuntimeWarnings during the matmul in search().
+        # poison the subsequent L2 re-normalisation.
         bad_mask = ~np.isfinite(self._doc_embeddings).all(axis=1)
         n_bad = int(bad_mask.sum())
         if n_bad:
@@ -245,6 +265,14 @@ class SemanticSearcher:
                 n_bad,
             )
             self._doc_embeddings[bad_mask] = 0.0
+
+        # Re-normalise to unit length.  The fp8-quantised embedding model
+        # performs L2 normalisation in reduced-precision MLX arithmetic, so
+        # cached vectors may have norms that drift from 1.0.  Without
+        # re-normalisation the dot-product can overflow float32 during
+        # matmul, producing RuntimeWarnings (divide-by-zero, overflow,
+        # invalid value).
+        self._doc_embeddings = _l2_normalize_rows(self._doc_embeddings)
 
         logger.info(
             "Aligned embeddings: %d of %d target URLs matched.",
@@ -407,10 +435,16 @@ class SemanticSearcher:
             f"Query:{query}"
         )
         q_vec = self._embed_batch([formatted_query], max_tokens)
+        # Ensure unit length — MLX fp8 normalisation can be imprecise.
+        q_vec = _l2_normalize_rows(q_vec)
 
-        # Cosine similarity (vectors are already normalised → dot product)
+        # Cosine similarity (vectors are unit-normalised → dot product)
         scores = self._doc_embeddings @ q_vec.T  # (n_docs, 1)
         scores = scores.squeeze(-1)
+
+        # Replace any residual NaN (e.g. 0-vec · 0-vec) with -1 so they
+        # sort last instead of polluting argsort.
+        np.nan_to_num(scores, copy=False, nan=-1.0)
 
         top_indices = np.argsort(scores)[::-1][:top_k]
         return [(int(i), float(scores[i])) for i in top_indices]
