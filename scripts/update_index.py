@@ -206,12 +206,35 @@ def _scatter(
     total_chunks = (len(texts) + chunk_size - 1) // chunk_size
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine which chunks still need processing
+    # Determine which chunks still need processing.
+    # If chunk files exist but don't match the expected URL slice for this
+    # run, treat them as stale and rebuild from that point.
     first_needed = 0
     for idx in range(total_chunks):
         emb_file = chunk_dir / f"chunk_{idx:04d}.npy"
         meta_file = chunk_dir / f"chunk_{idx:04d}.json"
+        expected_start = idx * chunk_size
+        expected_end = min(expected_start + chunk_size, len(urls))
+        expected_urls = urls[expected_start:expected_end]
+
         if emb_file.exists() and meta_file.exists():
+            try:
+                chunk_urls = json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning(
+                    "Chunk %d metadata is unreadable. Rebuilding from this chunk.",
+                    idx,
+                )
+                break
+
+            if chunk_urls != expected_urls:
+                logger.warning(
+                    "Chunk %d metadata does not match expected URLs for this run. "
+                    "Rebuilding from this chunk to avoid stale-cache corruption.",
+                    idx,
+                )
+                break
+
             first_needed = idx + 1
         else:
             break
@@ -222,6 +245,15 @@ def _scatter(
 
     if first_needed > 0:
         logger.info("Resuming scatter from chunk %d / %d.", first_needed, total_chunks)
+
+    # Remove stale files from the first chunk that needs work onward so we
+    # don't accidentally gather outdated partial/final artifacts.
+    for idx in range(first_needed, total_chunks):
+        (chunk_dir / f"chunk_{idx:04d}.npy").unlink(missing_ok=True)
+        (chunk_dir / f"chunk_{idx:04d}.json").unlink(missing_ok=True)
+        (chunk_dir / f"chunk_{idx:04d}_partial.npy").unlink(missing_ok=True)
+        (chunk_dir / f"chunk_{idx:04d}_partial.json").unlink(missing_ok=True)
+        (chunk_dir / f"chunk_{idx:04d}_tmp.npy").unlink(missing_ok=True)
 
     searcher = SemanticSearcher()
     searcher.load_model()
@@ -311,6 +343,25 @@ def _gather(
     shutil.rmtree(chunk_dir)
     logger.info("Gather complete — merged shape %s. Chunks cleaned up.", merged.shape)
     return merged
+
+
+def _validate_cache_integrity(embeddings: np.ndarray, urls: list[str]) -> None:
+    """Raise ValueError when merged cache is internally inconsistent."""
+    if embeddings.shape[0] != len(urls):
+        raise ValueError(
+            "Embedding/metadata mismatch after merge: "
+            f"{embeddings.shape[0]} vectors vs {len(urls)} URLs"
+        )
+
+    unique_urls = len(set(urls))
+    if unique_urls != len(urls):
+        raise ValueError(
+            "Duplicate URLs detected in merged metadata: "
+            f"{len(urls) - unique_urls} duplicates out of {len(urls)} URLs"
+        )
+
+    if not np.isfinite(embeddings).all():
+        raise ValueError("Non-finite values (NaN/Inf) detected in merged embeddings")
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +478,14 @@ def main() -> None:
             existing_embeddings, existing_urls,
             emb_path, meta_path,
         )
+
+    merged_urls = _load_metadata(meta_path)
+    _validate_cache_integrity(merged, merged_urls)
+    logger.info(
+        "Cache integrity check passed: %d vectors, %d unique URLs.",
+        merged.shape[0],
+        len(merged_urls),
+    )
 
     # -- Upload to Hugging Face --------------------------------------------
     logger.info("Uploading updated cache to %s …", args.repo_id)
