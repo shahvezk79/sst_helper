@@ -335,16 +335,25 @@ class SemanticSearcher:
         batch_idx = mx.arange(hidden_states.shape[0])
         pooled = hidden_states[batch_idx, seq_lengths]  # (batch, hidden)
 
-        # L2 normalise
+        # ---- Upcast to float32 BEFORE normalisation ----
+        # The mxfp8 model computes activations in float16 (max 65 504).
+        # L2-norm involves squaring elements: any value > ~256 causes
+        # x² > 65 504 → Inf in float16, cascading to NaN through the
+        # entire vector.  Upcasting first keeps the norm in float32
+        # (max ~3.4e38) where overflow is effectively impossible.
+        pooled = pooled.astype(mx.float32)
+
+        # L2 normalise (now in float32 — stable for any float16-range input)
         norms = mx.linalg.norm(pooled, axis=-1, keepdims=True)
-        normed = pooled / mx.maximum(norms, mx.array(1e-9))
+        normed = pooled / mx.maximum(norms, mx.array(1e-9, dtype=mx.float32))
         mx.eval(normed)
 
         result = np.array(normed, dtype=np.float32)
 
-        # Sanitize: fp8-quantised hidden states can overflow during
-        # normalisation (Inf → norm=Inf → Inf/Inf = NaN) causing
-        # RuntimeWarnings in the downstream matmul.
+        # Safety net: the float32 upcast above prevents normalization
+        # overflow, but the fp8 forward pass itself can still produce
+        # NaN/Inf hidden states in rare cases.  Zero those rows so the
+        # downstream matmul never sees non-finite values.
         _sanitize_embedding_batch(result)
 
         # Eagerly free large MLX tensors so Metal memory is reclaimable
