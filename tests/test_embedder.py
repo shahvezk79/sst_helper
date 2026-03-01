@@ -43,6 +43,7 @@ _transformers = _stub("transformers")
 _transformers.AutoTokenizer = None  # type: ignore[attr-defined]
 
 from sst_navigator.embedder import (  # noqa: E402
+    SemanticSearcher,
     _sanitize_embedding_batch,
     _l2_normalize_rows,
     _sanitize_and_normalize_rows,
@@ -226,3 +227,24 @@ class TestSanitizeAndNormalizeRows:
             _sanitize_and_normalize_rows(rows)
 
         assert not any("Sanitizing" in r.message for r in caplog.records)
+
+
+class TestSemanticSearcherSearchDefensiveSanitization:
+    def test_search_resanitizes_non_finite_docs_and_query(self):
+        import warnings
+
+        searcher = SemanticSearcher()
+        searcher._doc_embeddings = np.array(
+            [[1.0, 0.0], [np.inf, 1.0], [0.0, np.nan]],
+            dtype=np.float32,
+        )
+
+        # Simulate a query embedding that comes back non-finite.
+        searcher._embed_batch = lambda texts, max_tokens: np.array([[np.inf, np.nan]], dtype=np.float32)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            hits = searcher.search("benefit eligibility", top_k=2)
+
+        assert len(hits) == 2
+        assert np.all(np.isfinite(searcher._doc_embeddings))

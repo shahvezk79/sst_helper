@@ -444,8 +444,20 @@ class SemanticSearcher:
             f"Query:{query}"
         )
         q_vec = self._embed_batch([formatted_query], max_tokens)
-        # Ensure unit length — MLX fp8 normalisation can be imprecise.
-        q_vec = _l2_normalize_rows(q_vec)
+        # Ensure finite + unit-length query vector.  _embed_batch already
+        # sanitises obvious NaN/Inf rows, but we do a final defensive pass
+        # here because query encoding can still drift on fp8 models.
+        q_vec = _sanitize_and_normalize_rows(q_vec)
+
+        # Cached vectors are sanitised during align_to_urls(), but keep a
+        # guardrail in case callers inject embeddings manually in tests or
+        # legacy code paths bypass alignment.
+        if not np.isfinite(self._doc_embeddings).all():
+            logger.warning(
+                "Detected non-finite values in cached document embeddings at search time; "
+                "re-sanitizing in-memory matrix."
+            )
+            self._doc_embeddings = _sanitize_and_normalize_rows(self._doc_embeddings)
 
         # Cosine similarity (vectors are unit-normalised → dot product)
         scores = self._doc_embeddings @ q_vec.T  # (n_docs, 1)
