@@ -54,7 +54,7 @@ CHECKPOINT_EVERY = API_BATCH_SIZE * 5
 
 # DeepInfra/Qwen max context for embedding documents in this workflow.
 # We keep 1 document -> 1 vector, so long documents are truncated (not split).
-API_TEXT_MAX_TOKENS = 8196
+API_TEXT_MAX_TOKENS = 8192
 # Qwen tokenization is typically ~3-4 chars/token for English text, so 4x is
 # a conservative upper bound for pre-truncation before API calls.
 API_TEXT_MAX_CHARS = API_TEXT_MAX_TOKENS * 4
@@ -111,7 +111,7 @@ def _embed_texts_api(
             return True
 
         err_msg = str(exc).lower()
-        return " 5" in err_msg or "500" in err_msg or "inference error" in err_msg
+        return "500" in err_msg or "inference error" in err_msg or "server error" in err_msg
 
     def _is_transient_network_error(exc: Exception) -> bool:
         if isinstance(exc, (APITimeoutError, APIConnectionError, TimeoutError)):
@@ -172,80 +172,79 @@ def _embed_texts_api(
 
         return batches
 
+    def request_embeddings(batch_inputs: list[str]) -> np.ndarray:
+        cooldown_count = 0
+        while True:
+            last_exc: Exception | None = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = client.embeddings.create(
+                        input=batch_inputs,
+                        model=model,
+                        encoding_format="float",
+                        timeout=request_timeout_s,
+                    )
+                    return np.array(
+                        [item.embedding for item in response.data], dtype=np.float32
+                    )
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt >= max_retries:
+                        break
+                    sleep_s = retry_backoff_s * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Embedding request failed (%s). Retrying %d/%d in %.1fs.",
+                        exc,
+                        attempt,
+                        max_retries,
+                        sleep_s,
+                    )
+                    time.sleep(sleep_s)
+
+            if len(batch_inputs) > min_split_batch_size:
+                mid = len(batch_inputs) // 2
+                left = request_embeddings(batch_inputs[:mid])
+                right = request_embeddings(batch_inputs[mid:])
+                logger.warning(
+                    "Recovered from repeated API errors by splitting batch (%d -> %d + %d).",
+                    len(batch_inputs),
+                    len(batch_inputs[:mid]),
+                    len(batch_inputs[mid:]),
+                )
+                return np.concatenate([left, right], axis=0)
+
+            err_msg = str(last_exc) if last_exc is not None else "unknown error"
+            is_server_error = last_exc is not None and _is_provider_server_error(last_exc)
+            is_transient_network = (
+                last_exc is not None and _is_transient_network_error(last_exc)
+            )
+            if (
+                (is_server_error or is_transient_network)
+                and server_error_cooldown_s > 0
+                and cooldown_count < max_server_error_cooldowns
+            ):
+                cooldown_count += 1
+                logger.warning(
+                    "Persistent provider/network error for batch size %d (chars=%d). "
+                    "Cooling down %.1fs (%d/%d) before retrying the same batch.",
+                    len(batch_inputs),
+                    sum(len(t) for t in batch_inputs),
+                    server_error_cooldown_s,
+                    cooldown_count,
+                    max_server_error_cooldowns,
+                )
+                time.sleep(server_error_cooldown_s)
+                continue
+
+            raise RuntimeError(
+                "Embedding request failed after retries/splitting/cooldowns; "
+                f"batch could not be recovered (size={len(batch_inputs)}). Last error: {err_msg}"
+            ) from last_exc
+
     batches = _iter_api_batches(prepared_texts)
     parts: list[np.ndarray] = []
 
     for batch in tqdm(batches, desc=progress_desc, unit="batch"):
-
-        def request_embeddings(batch_inputs: list[str]) -> np.ndarray:
-            cooldown_count = 0
-            while True:
-                last_exc: Exception | None = None
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        response = client.embeddings.create(
-                            input=batch_inputs,
-                            model=model,
-                            encoding_format="float",
-                            timeout=request_timeout_s,
-                        )
-                        return np.array(
-                            [item.embedding for item in response.data], dtype=np.float32
-                        )
-                    except Exception as exc:
-                        last_exc = exc
-                        if attempt >= max_retries:
-                            break
-                        sleep_s = retry_backoff_s * (2 ** (attempt - 1))
-                        logger.warning(
-                            "Embedding request failed (%s). Retrying %d/%d in %.1fs.",
-                            exc,
-                            attempt,
-                            max_retries,
-                            sleep_s,
-                        )
-                        time.sleep(sleep_s)
-
-                if len(batch_inputs) > min_split_batch_size:
-                    mid = len(batch_inputs) // 2
-                    left = request_embeddings(batch_inputs[:mid])
-                    right = request_embeddings(batch_inputs[mid:])
-                    logger.warning(
-                        "Recovered from repeated API errors by splitting batch (%d -> %d + %d).",
-                        len(batch_inputs),
-                        len(batch_inputs[:mid]),
-                        len(batch_inputs[mid:]),
-                    )
-                    return np.concatenate([left, right], axis=0)
-
-                err_msg = str(last_exc) if last_exc is not None else "unknown error"
-                is_server_error = last_exc is not None and _is_provider_server_error(last_exc)
-                is_transient_network = (
-                    last_exc is not None and _is_transient_network_error(last_exc)
-                )
-                if (
-                    (is_server_error or is_transient_network)
-                    and server_error_cooldown_s > 0
-                    and cooldown_count < max_server_error_cooldowns
-                ):
-                    cooldown_count += 1
-                    logger.warning(
-                        "Persistent provider/network error for batch size %d (chars=%d). "
-                        "Cooling down %.1fs (%d/%d) before retrying the same batch.",
-                        len(batch_inputs),
-                        sum(len(t) for t in batch_inputs),
-                        server_error_cooldown_s,
-                        cooldown_count,
-                        max_server_error_cooldowns,
-                    )
-                    time.sleep(server_error_cooldown_s)
-                    continue
-
-                raise RuntimeError(
-                    "Embedding request failed after retries/splitting/cooldowns; "
-                    f"batch could not be recovered (size={len(batch_inputs)}). Last error: {err_msg}"
-                ) from last_exc
-
         batch_vecs = request_embeddings(batch)
         parts.append(batch_vecs)
 
