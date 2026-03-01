@@ -229,6 +229,59 @@ class TestSanitizeAndNormalizeRows:
         assert not any("Sanitizing" in r.message for r in caplog.records)
 
 
+class TestFloat16OverflowPrevention:
+    """Validates the root-cause fix: normalising in float32 prevents the
+    float16-overflow → NaN → matmul-warning cascade.
+
+    The mxfp8 model produces hidden states in float16 (max 65 504).  Any
+    element > ~256 causes x² > 65 504 → Inf during the L2-norm, which
+    cascades to NaN when dividing Inf/Inf.  The fix upcasts *pooled* to
+    float32 before computing the norm, keeping the arithmetic in float32
+    range (max ~3.4e38).
+    """
+
+    def test_float16_overflow_values_normalise_cleanly_in_float32(self):
+        """Hidden-state magnitudes that overflow float16 norm must still
+        produce finite, unit-length vectors after float32 normalisation."""
+        import warnings
+
+        # Values > 256 would overflow when squared in float16
+        large = np.array([[300.0, 400.0, 500.0]], dtype=np.float16)
+        assert not np.isfinite(np.linalg.norm(large.astype(np.float16))), \
+            "sanity: float16 norm should overflow for these values"
+
+        # Upcast to float32 (the fix), then normalise
+        as_f32 = large.astype(np.float32)
+        normed = _l2_normalize_rows(as_f32)
+
+        assert np.all(np.isfinite(normed))
+        np.testing.assert_allclose(
+            np.linalg.norm(normed, axis=1), [1.0], atol=1e-6,
+        )
+
+    def test_matmul_no_warnings_after_float32_normalisation(self):
+        """End-to-end: float32-normalised vectors must not trigger any
+        RuntimeWarning during matmul, even when the original magnitudes
+        would have overflowed float16."""
+        import warnings
+
+        # Simulate doc embeddings that had large hidden-state magnitudes
+        docs = np.array(
+            [[500.0, 600.0, 700.0], [0.1, 0.2, 0.3], [1000.0, 0.0, 0.0]],
+            dtype=np.float32,
+        )
+        query = np.array([[0.5, 0.5, 0.7]], dtype=np.float32)
+        docs_normed = _l2_normalize_rows(docs)
+        query_normed = _l2_normalize_rows(query)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            scores = docs_normed @ query_normed.T
+
+        assert np.all(np.isfinite(scores))
+        assert np.all(np.abs(scores) <= 1.0 + 1e-6)
+
+
 class TestSemanticSearcherSearchDefensiveSanitization:
     def test_search_resanitizes_non_finite_docs_and_query(self):
         import warnings
