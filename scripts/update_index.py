@@ -3,8 +3,16 @@
 For small weekly updates (a few dozen cases), the script embeds and appends
 directly.  For large cold-start runs (thousands of cases), it uses a
 Scatter-Gather strategy: each chunk is saved to its own file, then all
-chunks are merged once at the end.  This keeps peak memory low during
-GPU embedding and makes the run fully resumable.
+chunks are merged once at the end.  This keeps peak memory low and makes
+the run fully resumable.
+
+Embeddings are produced via the DeepInfra OpenAI-compatible API using
+Qwen/Qwen3-Embedding-8B-batch (50 % cheaper than the real-time variant,
+intended for bulk, non-latency-sensitive workloads).  Set DEEPINFRA_API_KEY
+in your environment before running.
+
+Pass --use-local to fall back to the local MLX model (useful on Apple Silicon
+without a DeepInfra account, or for offline development).
 """
 
 from __future__ import annotations
@@ -13,12 +21,12 @@ import argparse
 import gc
 import json
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
 
 import numpy as np
-import mlx.core as mx
 from huggingface_hub import HfApi, hf_hub_download
 from tqdm import tqdm
 
@@ -31,24 +39,82 @@ from sst_navigator.data_loader import load_sst_decisions
 
 logger = logging.getLogger(__name__)
 
-# Chunks smaller than this threshold are embedded and merged directly
-# (the original delta-update path).  Larger runs use Scatter-Gather.
+# Chunks smaller than this threshold are embedded and merged directly.
+# Larger runs use Scatter-Gather.
 SCATTER_GATHER_THRESHOLD = 1000
 CHUNK_SIZE = 500
 
-# Tuned for MacBook Pro M5 (16 GB unified memory).  The 4B embedding
-# model consumes ~4 GB; each text at 8192 tokens needs ~290 MB of KV
-# cache across 36 layers, so batch_size=4 keeps peak GPU memory ≈ 5.6 GB
-# and leaves headroom for the OS and other processes.
-BATCH_SIZE = 4
+# API batch size: DeepInfra accepts up to 2048 inputs per request; 200 is
+# a conservative default that keeps request payloads manageable.
+API_BATCH_SIZE = 200
 
-# Within each chunk, save partial progress every CHECKPOINT_EVERY texts
-# so a mid-chunk crash only loses one interval instead of the whole chunk.
-CHECKPOINT_EVERY = BATCH_SIZE * 25  # 100 texts
+# Within each chunk, save partial progress every CHECKPOINT_EVERY texts.
+CHECKPOINT_EVERY = API_BATCH_SIZE * 5  # 1 000 texts
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Embedding helpers
+# ---------------------------------------------------------------------------
+
+def _embed_texts_api(
+    texts: list[str],
+    model: str,
+    batch_size: int = API_BATCH_SIZE,
+    progress_desc: str = "Embedding",
+) -> np.ndarray:
+    """Embed *texts* via DeepInfra OpenAI-compatible API, return float32 array."""
+    from openai import OpenAI
+
+    api_key = os.environ.get("DEEPINFRA_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "DEEPINFRA_API_KEY is not set. "
+            "Export your key or pass --use-local to use the MLX model."
+        )
+
+    client = OpenAI(api_key=api_key, base_url=config.DEEPINFRA_BASE_URL)
+    parts: list[np.ndarray] = []
+
+    for start in tqdm(
+        range(0, len(texts), batch_size),
+        desc=progress_desc,
+        unit="batch",
+    ):
+        batch = texts[start : start + batch_size]
+        response = client.embeddings.create(
+            input=batch,
+            model=model,
+            encoding_format="float",
+        )
+        batch_vecs = np.array(
+            [item.embedding for item in response.data], dtype=np.float32
+        )
+        parts.append(batch_vecs)
+
+    return np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
+
+
+def _embed_texts_mlx(
+    texts: list[str],
+    batch_size: int = 4,
+) -> np.ndarray:
+    """Embed *texts* via the local MLX model (fallback path)."""
+    from sst_navigator.embedder import SemanticSearcher
+
+    searcher = SemanticSearcher(backend="mlx")
+    searcher.load_model()
+    try:
+        return searcher.embed_texts(
+            texts,
+            batch_size=batch_size,
+            max_tokens=config.EMBEDDING_MAX_TOKENS,
+        )
+    finally:
+        searcher.unload_model()
+
+
+# ---------------------------------------------------------------------------
+# Metadata helpers
 # ---------------------------------------------------------------------------
 
 def _load_metadata(metadata_path: Path) -> list[str]:
@@ -116,22 +182,17 @@ def _load_existing_cache(
 # ---------------------------------------------------------------------------
 
 def _embed_chunk_resumable(
-    searcher,
     texts: list[str],
-    batch_size: int,
+    use_local: bool,
     checkpoint_every: int,
     partial_emb_path: Path,
     partial_progress_path: Path,
 ) -> np.ndarray:
     """Embed *texts* with periodic intra-chunk saves.
 
-    If *partial_emb_path* and *partial_progress_path* already exist from a
-    previous interrupted run, the already-embedded prefix is loaded and
-    embedding resumes from where it stopped.
-
+    Resumes from *partial_emb_path* / *partial_progress_path* if they exist.
     Returns the full (len(texts), embed_dim) array.
     """
-    # Resume from partial progress if available
     if partial_emb_path.exists() and partial_progress_path.exists():
         completed = json.loads(
             partial_progress_path.read_text(encoding="utf-8"),
@@ -147,26 +208,25 @@ def _embed_chunk_resumable(
         assert prev_emb is not None
         return prev_emb
 
-    # Accumulate new interval embeddings in a list; concatenate only at
-    # checkpoint boundaries to avoid the O(n²) cost of repeated binary
-    # np.concatenate on a growing array.
     new_parts: list[np.ndarray] = []
 
     for i in range(0, len(remaining), checkpoint_every):
         sub = remaining[i : i + checkpoint_every]
-        sub_emb = searcher.embed_texts(
-            sub,
-            batch_size=batch_size,
-            max_tokens=config.EMBEDDING_MAX_TOKENS,
-        )
+
+        if use_local:
+            sub_emb = _embed_texts_mlx(sub)
+        else:
+            sub_emb = _embed_texts_api(
+                sub,
+                model=config.DEEPINFRA_EMBEDDING_BATCH_MODEL,
+                progress_desc="  Checkpoint",
+            )
+
         new_parts.append(sub_emb)
         completed += len(sub)
 
-        # Build the full array for the checkpoint save
         new_block = (
-            np.concatenate(new_parts, axis=0)
-            if len(new_parts) > 1
-            else new_parts[0]
+            np.concatenate(new_parts, axis=0) if len(new_parts) > 1 else new_parts[0]
         )
         checkpoint_emb = (
             np.concatenate([prev_emb, new_block], axis=0)
@@ -174,7 +234,6 @@ def _embed_chunk_resumable(
             else new_block
         )
 
-        # Persist partial state so a crash only loses one interval
         np.save(partial_emb_path, checkpoint_emb)
         partial_progress_path.write_text(
             json.dumps({"completed": completed}), encoding="utf-8",
@@ -182,7 +241,6 @@ def _embed_chunk_resumable(
 
         del sub_emb
         gc.collect()
-        mx.clear_cache()
 
     return checkpoint_emb  # type: ignore[possibly-undefined]
 
@@ -192,21 +250,17 @@ def _scatter(
     urls: list[str],
     chunk_dir: Path,
     chunk_size: int,
-    batch_size: int = BATCH_SIZE,
+    use_local: bool,
     checkpoint_every: int = CHECKPOINT_EVERY,
 ) -> int:
     """Embed *texts* in chunks, writing each to *chunk_dir*.
 
-    Returns the number of chunks produced.  Completed chunk files are
-    skipped entirely, and partially-completed chunks resume from the
-    last intra-chunk checkpoint.
+    Returns the number of chunks produced.
     """
-    from sst_navigator.embedder import SemanticSearcher
-
     total_chunks = (len(texts) + chunk_size - 1) // chunk_size
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine which chunks still need processing
+    # Skip chunks that are already complete
     first_needed = 0
     for idx in range(total_chunks):
         emb_file = chunk_dir / f"chunk_{idx:04d}.npy"
@@ -223,53 +277,44 @@ def _scatter(
     if first_needed > 0:
         logger.info("Resuming scatter from chunk %d / %d.", first_needed, total_chunks)
 
-    searcher = SemanticSearcher()
-    searcher.load_model()
-    try:
-        for idx in tqdm(
-            range(first_needed, total_chunks),
-            initial=first_needed,
-            total=total_chunks,
-            desc="Scatter",
-        ):
-            start = idx * chunk_size
-            end = min(start + chunk_size, len(texts))
-            chunk_texts = texts[start:end]
-            chunk_urls = urls[start:end]
+    for idx in tqdm(
+        range(first_needed, total_chunks),
+        initial=first_needed,
+        total=total_chunks,
+        desc="Scatter",
+    ):
+        start = idx * chunk_size
+        end = min(start + chunk_size, len(texts))
+        chunk_texts = texts[start:end]
+        chunk_urls = urls[start:end]
 
-            # Paths for intra-chunk partial progress
-            partial_emb = chunk_dir / f"chunk_{idx:04d}_partial.npy"
-            partial_prog = chunk_dir / f"chunk_{idx:04d}_partial.json"
+        partial_emb = chunk_dir / f"chunk_{idx:04d}_partial.npy"
+        partial_prog = chunk_dir / f"chunk_{idx:04d}_partial.json"
 
-            chunk_emb = _embed_chunk_resumable(
-                searcher,
-                chunk_texts,
-                batch_size=batch_size,
-                checkpoint_every=checkpoint_every,
-                partial_emb_path=partial_emb,
-                partial_progress_path=partial_prog,
-            )
+        chunk_emb = _embed_chunk_resumable(
+            chunk_texts,
+            use_local=use_local,
+            checkpoint_every=checkpoint_every,
+            partial_emb_path=partial_emb,
+            partial_progress_path=partial_prog,
+        )
 
-            # Promote to final chunk file (atomic rename)
-            emb_file = chunk_dir / f"chunk_{idx:04d}.npy"
-            meta_file = chunk_dir / f"chunk_{idx:04d}.json"
-            tmp_emb = chunk_dir / f"chunk_{idx:04d}_tmp.npy"
-            tmp_meta = meta_file.with_suffix(".json.tmp")
+        # Atomic promote to final chunk file
+        emb_file = chunk_dir / f"chunk_{idx:04d}.npy"
+        meta_file = chunk_dir / f"chunk_{idx:04d}.json"
+        tmp_emb = chunk_dir / f"chunk_{idx:04d}_tmp.npy"
+        tmp_meta = meta_file.with_suffix(".json.tmp")
 
-            np.save(tmp_emb, chunk_emb)
-            tmp_meta.write_text(json.dumps(chunk_urls), encoding="utf-8")
-            tmp_emb.rename(emb_file)
-            tmp_meta.rename(meta_file)
+        np.save(tmp_emb, chunk_emb)
+        tmp_meta.write_text(json.dumps(chunk_urls), encoding="utf-8")
+        tmp_emb.rename(emb_file)
+        tmp_meta.rename(meta_file)
 
-            # Clean up partial files
-            partial_emb.unlink(missing_ok=True)
-            partial_prog.unlink(missing_ok=True)
+        partial_emb.unlink(missing_ok=True)
+        partial_prog.unlink(missing_ok=True)
 
-            del chunk_emb
-            gc.collect()
-            mx.clear_cache()
-    finally:
-        searcher.unload_model()
+        del chunk_emb
+        gc.collect()
 
     return total_chunks
 
@@ -286,8 +331,7 @@ def _gather(
     emb_path: Path,
     meta_path: Path,
 ) -> np.ndarray:
-    """Load all chunk files, concatenate with existing data, and write the
-    final master cache.  Returns the merged embedding array."""
+    """Load all chunk files, concatenate with existing data, write master cache."""
     logger.info("Gather phase: merging %d chunk(s) into master cache …", num_chunks)
 
     parts: list[np.ndarray] = []
@@ -307,14 +351,13 @@ def _gather(
     np.save(emb_path, merged)
     _write_metadata(meta_path, all_urls)
 
-    # Clean up chunk directory
     shutil.rmtree(chunk_dir)
     logger.info("Gather complete — merged shape %s. Chunks cleaned up.", merged.shape)
     return merged
 
 
 # ---------------------------------------------------------------------------
-# Direct delta-update path (small batches — original behaviour)
+# Direct delta-update path (small batches)
 # ---------------------------------------------------------------------------
 
 def _direct_update(
@@ -324,26 +367,23 @@ def _direct_update(
     existing_urls: list[str],
     emb_path: Path,
     meta_path: Path,
+    use_local: bool,
 ) -> np.ndarray:
     """Embed a small batch of new cases and merge directly."""
-    from sst_navigator.embedder import SemanticSearcher
-
-    searcher = SemanticSearcher()
-    searcher.load_model()
-    try:
-        new_embeddings = searcher.embed_texts(
-            texts,
-            batch_size=BATCH_SIZE,
-            max_tokens=config.EMBEDDING_MAX_TOKENS,
-        )
-    finally:
-        searcher.unload_model()
-
-    if existing_embeddings is not None:
-        merged = np.concatenate([existing_embeddings, new_embeddings], axis=0)
+    if use_local:
+        new_embeddings = _embed_texts_mlx(texts)
     else:
-        merged = new_embeddings
+        new_embeddings = _embed_texts_api(
+            texts,
+            model=config.DEEPINFRA_EMBEDDING_BATCH_MODEL,
+            progress_desc="Embedding",
+        )
 
+    merged = (
+        np.concatenate([existing_embeddings, new_embeddings], axis=0)
+        if existing_embeddings is not None
+        else new_embeddings
+    )
     merged_urls = existing_urls + urls
 
     np.save(emb_path, merged)
@@ -369,9 +409,26 @@ def main() -> None:
         default=CHUNK_SIZE,
         help="Cases per scatter chunk (default: %(default)s).",
     )
+    parser.add_argument(
+        "--use-local",
+        action="store_true",
+        help="Use the local MLX model instead of the DeepInfra API.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    if not args.use_local and not os.environ.get("DEEPINFRA_API_KEY"):
+        logger.error(
+            "DEEPINFRA_API_KEY is not set. "
+            "Export your key or pass --use-local to use the local MLX model."
+        )
+        sys.exit(1)
+
+    embedding_source = "local MLX" if args.use_local else (
+        f"DeepInfra ({config.DEEPINFRA_EMBEDDING_BATCH_MODEL})"
+    )
+    logger.info("Embedding source: %s", embedding_source)
 
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -383,8 +440,7 @@ def main() -> None:
     existing_embeddings, existing_urls = _load_existing_cache(
         cache_dir, emb_path, meta_path, args.repo_id, args.repo_type,
     )
-    # Deduplicate existing cache so duplicates from prior runs don't persist
-    # or get re-written into the merged output.
+    # Deduplicate existing cache
     if existing_embeddings is not None:
         n_unique = len(set(existing_urls))
         if n_unique < len(existing_urls):
@@ -400,7 +456,6 @@ def main() -> None:
                     keep.append(i)
             existing_embeddings = existing_embeddings[np.array(keep)]
             existing_urls = [existing_urls[i] for i in keep]
-            # Persist the clean cache so future runs start clean
             np.save(emb_path, existing_embeddings)
             _write_metadata(meta_path, existing_urls)
 
@@ -420,10 +475,8 @@ def main() -> None:
     new_urls = new_df["url_en"].astype(str).tolist()
     logger.info("Found %d new decisions to embed.", len(new_df))
 
-    # Sort by text length so that similarly-sized documents land in the same
-    # batch.  With batch_size > 1, the tokenizer pads every text in a batch
-    # to the length of the longest one — grouping by length avoids wasting
-    # GPU cycles on padding tokens.
+    # Sort by text length to group similarly-sized documents; reduces padding
+    # waste when using the local MLX path.
     sorted_pairs = sorted(zip(new_texts, new_urls), key=lambda p: len(p[0]))
     new_texts = [t for t, _ in sorted_pairs]
     new_urls = [u for _, u in sorted_pairs]
@@ -435,7 +488,9 @@ def main() -> None:
             len(new_texts),
             args.chunk_size,
         )
-        num_chunks = _scatter(new_texts, new_urls, chunk_dir, args.chunk_size)
+        num_chunks = _scatter(
+            new_texts, new_urls, chunk_dir, args.chunk_size, args.use_local,
+        )
         merged = _gather(
             chunk_dir, num_chunks,
             existing_embeddings, existing_urls,
@@ -447,6 +502,7 @@ def main() -> None:
             new_texts, new_urls,
             existing_embeddings, existing_urls,
             emb_path, meta_path,
+            use_local=args.use_local,
         )
 
     # -- Upload to Hugging Face --------------------------------------------

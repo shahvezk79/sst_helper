@@ -1,19 +1,21 @@
 """
 Stage 1 — Semantic search via bi-encoder embeddings.
 
-Uses the Qwen3-Embedding model through mlx-lm with manual hidden-state
-extraction and last-token pooling (the official Qwen3 embedding strategy).
+Supports two backends:
+  1. Local MLX model (default) — runs on Apple Silicon via mlx-lm with
+     manual hidden-state extraction and last-token pooling (the official
+     Qwen3 embedding strategy).
+  2. DeepInfra API — set DEEPINFRA_API_KEY in env; uses the OpenAI-
+     compatible embeddings endpoint with Qwen3-Embedding-8B.
 """
 
 import logging
 import json
+import os
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
 from huggingface_hub import hf_hub_download
-from mlx_lm.utils import load_model, _download
-from transformers import AutoTokenizer
 
 from . import config
 
@@ -80,13 +82,15 @@ def _sanitize_and_normalize_rows(arr: np.ndarray) -> np.ndarray:
 
 # ---------------------------------------------------------------------------
 # Qwen3 embedding model wrapper — strips lm_head so we get hidden states
+# (MLX backend only)
 # ---------------------------------------------------------------------------
 
-def _get_embedding_model_classes(config: dict):
+def _get_embedding_model_classes(model_config: dict):
     """Return a (ModelClass, ModelArgs) tuple that strips the lm_head."""
     import importlib
+    import mlx.core as mx  # noqa: F401 — used by the generated class
 
-    model_type = config.get("model_type", "qwen3").lower()
+    model_type = model_config.get("model_type", "qwen3").lower()
     # mlx-lm stores arch implementations by model_type
     try:
         arch_module = importlib.import_module(f"mlx_lm.models.{model_type}")
@@ -106,10 +110,10 @@ def _get_embedding_model_classes(config: dict):
 
         def __call__(
             self,
-            inputs: mx.array,
+            inputs,
             cache=None,
-            input_embeddings: mx.array | None = None,
-        ) -> mx.array:
+            input_embeddings=None,
+        ):
             # self.model is the inner transformer (Qwen2Model / Qwen3Model)
             return self.model(inputs, cache=cache, input_embeddings=input_embeddings)
 
@@ -121,10 +125,21 @@ def _get_embedding_model_classes(config: dict):
 # ---------------------------------------------------------------------------
 
 class SemanticSearcher:
-    """Embeds documents and queries, returns top-K by cosine similarity."""
+    """Embeds documents and queries, returns top-K by cosine similarity.
 
-    def __init__(self, model_name: str = config.EMBEDDING_MODEL):
+    Args:
+        model_name: HuggingFace model ID (used by the MLX backend only).
+        backend: ``"mlx"`` (default, local Apple Silicon inference) or
+            ``"deepinfra"`` (cloud API, requires ``DEEPINFRA_API_KEY``).
+    """
+
+    def __init__(
+        self,
+        model_name: str = config.EMBEDDING_MODEL,
+        backend: str = "mlx",
+    ):
         self.model_name = model_name
+        self.backend = backend
         self.model = None
         self.tokenizer = None
         # Stored document embeddings (numpy for fast cosine on CPU)
@@ -290,11 +305,21 @@ class SemanticSearcher:
     # -- Model lifecycle ---------------------------------------------------
 
     def load_model(self) -> None:
-        """Download (if needed) and load the embedding model into MLX."""
+        """Download (if needed) and load the embedding model into MLX.
+
+        No-op when ``backend == "deepinfra"`` — the API needs no local model.
+        """
+        if self.backend != "mlx":
+            return
+
+        import mlx.core as mx  # noqa: F401 — imported for side-effects
+        from mlx_lm.utils import load_model as mlx_load_model, _download
+        from transformers import AutoTokenizer
+
         logger.info("Loading embedding model %s …", self.model_name)
         try:
             model_path = _download(self.model_name)
-            self.model, _ = load_model(
+            self.model, _ = mlx_load_model(
                 model_path=model_path,
                 get_model_classes=_get_embedding_model_classes,
             )
@@ -307,7 +332,15 @@ class SemanticSearcher:
             raise
 
     def unload_model(self) -> None:
-        """Free the model from memory (useful before loading the reranker)."""
+        """Free the model from memory (useful before loading the reranker).
+
+        No-op when ``backend == "deepinfra"``.
+        """
+        if self.backend != "mlx":
+            return
+
+        import mlx.core as mx
+
         self.model = None
         self.tokenizer = None
         mx.clear_cache()
@@ -317,6 +350,35 @@ class SemanticSearcher:
 
     def _embed_batch(self, texts: list[str], max_tokens: int) -> np.ndarray:
         """Embed a list of texts and return L2-normalised numpy vectors."""
+        if self.backend == "deepinfra":
+            return self._embed_batch_deepinfra(texts)
+        return self._embed_batch_mlx(texts, max_tokens)
+
+    def _embed_batch_deepinfra(self, texts: list[str]) -> np.ndarray:
+        """Embed texts via the DeepInfra OpenAI-compatible embeddings API."""
+        from openai import OpenAI
+
+        api_key = os.environ.get("DEEPINFRA_API_KEY")
+        if not api_key:
+            raise RuntimeError("Set DEEPINFRA_API_KEY in your environment.")
+
+        client = OpenAI(api_key=api_key, base_url=config.DEEPINFRA_BASE_URL)
+        response = client.embeddings.create(
+            input=texts,
+            model=config.DEEPINFRA_EMBEDDING_MODEL,
+            encoding_format="float",
+        )
+        vectors = np.array(
+            [item.embedding for item in response.data], dtype=np.float32
+        )
+        _sanitize_embedding_batch(vectors)
+        return vectors
+
+    def _embed_batch_mlx(self, texts: list[str], max_tokens: int) -> np.ndarray:
+        """Embed texts using the local MLX model."""
+        import mlx.core as mx
+        from transformers import AutoTokenizer  # noqa: F401 — already loaded
+
         encoded = self.tokenizer(
             texts,
             padding=True,

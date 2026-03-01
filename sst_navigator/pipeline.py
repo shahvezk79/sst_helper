@@ -2,9 +2,10 @@
 Pipeline orchestrator — ties the data loader, embedder, reranker, and
 generator into a single search-and-summarise workflow.
 
-Because the 4B embedding, reranker, and generation models are each ~4 GB,
+Because the 8B embedding, reranker, and generation models are each ~8 GB,
 we load and unload them sequentially to keep peak memory manageable on
-machines with ≤32 GB unified memory.
+machines with ≤32 GB unified memory.  Cloud mode (DeepInfra) bypasses
+local model loading for embedding and reranking entirely.
 """
 
 import logging
@@ -56,10 +57,11 @@ class SSTNavigatorPipeline:
         self.generation_backend = generation_backend
         self.fast_mode = fast_mode
 
+        embedder_backend = "deepinfra" if compute_mode == "cloud" else "mlx"
         reranker_backend = "deepinfra" if compute_mode == "cloud" else "mlx"
 
         self._df: pd.DataFrame | None = None
-        self._searcher = SemanticSearcher()
+        self._searcher = SemanticSearcher(backend=embedder_backend)
         self._reranker = Reranker(backend=reranker_backend)
         self._generator = CaseCardGenerator(backend=generation_backend)
 
@@ -101,7 +103,15 @@ class SSTNavigatorPipeline:
             self._loaded = None
 
         self.compute_mode = mode
+        embedder_backend = "deepinfra" if mode == "cloud" else "mlx"
         reranker_backend = "deepinfra" if mode == "cloud" else "mlx"
+
+        # Carry over already-loaded document embeddings to the new searcher
+        # so we don't need to re-download/re-align the cache.
+        old_doc_embeddings = self._searcher._doc_embeddings
+        self._searcher = SemanticSearcher(backend=embedder_backend)
+        self._searcher._doc_embeddings = old_doc_embeddings
+
         self._reranker = Reranker(backend=reranker_backend)
 
 
@@ -189,6 +199,8 @@ class SSTNavigatorPipeline:
             return
 
         # Cloud-backed stages have no local model — skip the swap.
+        if name == "embedder" and self._searcher.backend != "mlx":
+            return
         if name == "reranker" and self._reranker.backend != "mlx":
             return
         if name == "generator" and self._generator.backend != "mlx":

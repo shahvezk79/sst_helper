@@ -3,7 +3,7 @@ pandas>=2.0
 pyarrow>=14.0
 numpy>=1.24
 
-# Apple Silicon ML
+# Apple Silicon ML (local inference fallback)
 mlx>=0.22.0
 mlx-lm>=0.20.0
 
@@ -15,12 +15,6 @@ tokenizers>=0.19
 # Frontend
 streamlit>=1.35
 
-# Optional: LLM API for case card generation
-# Uncomment one:
-# openai>=1.30
-# google-generativeai>=0.5
-
-# Optional: Cloud compute via DeepInfra
-# (openai is also needed for DeepInfra generation — same client, different base_url)
-# requests>=2.31
-# openai>=1.30
+# Cloud compute — DeepInfra embedding, reranking, and generation
+openai>=1.30      # OpenAI-compatible client (used for DeepInfra embedding + generation)
+requests>=2.31    # Used for DeepInfra reranker (native inference endpoint)
