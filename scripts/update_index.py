@@ -24,6 +24,7 @@ import logging
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,12 @@ def _embed_texts_api(
     model: str,
     batch_size: int = API_BATCH_SIZE,
     progress_desc: str = "Embedding",
+    request_timeout_s: float = 180.0,
+    max_retries: int = 4,
+    retry_backoff_s: float = 2.0,
+    min_split_batch_size: int = 25,
+    server_error_cooldown_s: float = 120.0,
+    max_server_error_cooldowns: int = 30,
 ) -> np.ndarray:
     """Embed *texts* via DeepInfra OpenAI-compatible API, return float32 array."""
     from openai import OpenAI
@@ -72,7 +79,11 @@ def _embed_texts_api(
             "Export your key or pass --use-local to use the MLX model."
         )
 
-    client = OpenAI(api_key=api_key, base_url=config.DEEPINFRA_BASE_URL)
+    client = OpenAI(
+        api_key=api_key,
+        base_url=config.DEEPINFRA_BASE_URL,
+        timeout=request_timeout_s,
+    )
     parts: list[np.ndarray] = []
 
     for start in tqdm(
@@ -81,14 +92,73 @@ def _embed_texts_api(
         unit="batch",
     ):
         batch = texts[start : start + batch_size]
-        response = client.embeddings.create(
-            input=batch,
-            model=model,
-            encoding_format="float",
-        )
-        batch_vecs = np.array(
-            [item.embedding for item in response.data], dtype=np.float32
-        )
+
+        def request_embeddings(batch_inputs: list[str]) -> np.ndarray:
+            cooldown_count = 0
+            while True:
+                last_exc: Exception | None = None
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        response = client.embeddings.create(
+                            input=batch_inputs,
+                            model=model,
+                            encoding_format="float",
+                            timeout=request_timeout_s,
+                        )
+                        return np.array(
+                            [item.embedding for item in response.data], dtype=np.float32
+                        )
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt >= max_retries:
+                            break
+                        sleep_s = retry_backoff_s * (2 ** (attempt - 1))
+                        logger.warning(
+                            "Embedding request failed (%s). Retrying %d/%d in %.1fs.",
+                            exc,
+                            attempt,
+                            max_retries,
+                            sleep_s,
+                        )
+                        time.sleep(sleep_s)
+
+                if len(batch_inputs) > min_split_batch_size:
+                    mid = len(batch_inputs) // 2
+                    left = request_embeddings(batch_inputs[:mid])
+                    right = request_embeddings(batch_inputs[mid:])
+                    logger.warning(
+                        "Recovered from repeated API errors by splitting batch (%d -> %d + %d).",
+                        len(batch_inputs),
+                        len(batch_inputs[:mid]),
+                        len(batch_inputs[mid:]),
+                    )
+                    return np.concatenate([left, right], axis=0)
+
+                err_msg = str(last_exc) if last_exc is not None else "unknown error"
+                is_server_error = "500" in err_msg or "inference error" in err_msg.lower()
+                if (
+                    is_server_error
+                    and server_error_cooldown_s > 0
+                    and cooldown_count < max_server_error_cooldowns
+                ):
+                    cooldown_count += 1
+                    logger.warning(
+                        "Persistent provider 5xx error for batch size %d. Cooling down %.1fs "
+                        "(%d/%d) before retrying the same batch.",
+                        len(batch_inputs),
+                        server_error_cooldown_s,
+                        cooldown_count,
+                        max_server_error_cooldowns,
+                    )
+                    time.sleep(server_error_cooldown_s)
+                    continue
+
+                raise RuntimeError(
+                    "Embedding request failed after retries/splitting/cooldowns; "
+                    f"batch could not be recovered (size={len(batch_inputs)}). Last error: {err_msg}"
+                ) from last_exc
+
+        batch_vecs = request_embeddings(batch)
         parts.append(batch_vecs)
 
     return np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
@@ -187,6 +257,12 @@ def _embed_chunk_resumable(
     checkpoint_every: int,
     partial_emb_path: Path,
     partial_progress_path: Path,
+    request_timeout_s: float,
+    max_retries: int,
+    retry_backoff_s: float,
+    min_split_batch_size: int,
+    server_error_cooldown_s: float,
+    max_server_error_cooldowns: int,
 ) -> np.ndarray:
     """Embed *texts* with periodic intra-chunk saves.
 
@@ -220,6 +296,12 @@ def _embed_chunk_resumable(
                 sub,
                 model=config.DEEPINFRA_EMBEDDING_BATCH_MODEL,
                 progress_desc="  Checkpoint",
+                request_timeout_s=request_timeout_s,
+                max_retries=max_retries,
+                retry_backoff_s=retry_backoff_s,
+                min_split_batch_size=min_split_batch_size,
+                server_error_cooldown_s=server_error_cooldown_s,
+                max_server_error_cooldowns=max_server_error_cooldowns,
             )
 
         new_parts.append(sub_emb)
@@ -252,6 +334,12 @@ def _scatter(
     chunk_size: int,
     use_local: bool,
     checkpoint_every: int = CHECKPOINT_EVERY,
+    request_timeout_s: float = 180.0,
+    max_retries: int = 4,
+    retry_backoff_s: float = 2.0,
+    min_split_batch_size: int = 25,
+    server_error_cooldown_s: float = 120.0,
+    max_server_error_cooldowns: int = 30,
 ) -> int:
     """Embed *texts* in chunks, writing each to *chunk_dir*.
 
@@ -297,6 +385,12 @@ def _scatter(
             checkpoint_every=checkpoint_every,
             partial_emb_path=partial_emb,
             partial_progress_path=partial_prog,
+            request_timeout_s=request_timeout_s,
+            max_retries=max_retries,
+            retry_backoff_s=retry_backoff_s,
+            min_split_batch_size=min_split_batch_size,
+            server_error_cooldown_s=server_error_cooldown_s,
+            max_server_error_cooldowns=max_server_error_cooldowns,
         )
 
         # Atomic promote to final chunk file
@@ -368,6 +462,12 @@ def _direct_update(
     emb_path: Path,
     meta_path: Path,
     use_local: bool,
+    request_timeout_s: float,
+    max_retries: int,
+    retry_backoff_s: float,
+    min_split_batch_size: int,
+    server_error_cooldown_s: float,
+    max_server_error_cooldowns: int,
 ) -> np.ndarray:
     """Embed a small batch of new cases and merge directly."""
     if use_local:
@@ -377,6 +477,12 @@ def _direct_update(
             texts,
             model=config.DEEPINFRA_EMBEDDING_BATCH_MODEL,
             progress_desc="Embedding",
+            request_timeout_s=request_timeout_s,
+            max_retries=max_retries,
+            retry_backoff_s=retry_backoff_s,
+            min_split_batch_size=min_split_batch_size,
+            server_error_cooldown_s=server_error_cooldown_s,
+            max_server_error_cooldowns=max_server_error_cooldowns,
         )
 
     merged = (
@@ -413,6 +519,51 @@ def main() -> None:
         "--use-local",
         action="store_true",
         help="Use the local MLX model instead of the DeepInfra API.",
+    )
+    parser.add_argument(
+        "--request-timeout-s",
+        type=float,
+        default=180.0,
+        help="Per-request DeepInfra timeout in seconds (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=4,
+        help="Retry attempts per DeepInfra request (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--retry-backoff-s",
+        type=float,
+        default=2.0,
+        help="Initial retry backoff in seconds; doubles per attempt (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--min-split-batch-size",
+        type=int,
+        default=25,
+        help=(
+            "If retries are exhausted, recursively split failed requests down to this "
+            "batch size before giving up (default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--server-error-cooldown-s",
+        type=float,
+        default=120.0,
+        help=(
+            "Cooldown in seconds before retrying unrecoverable 5xx/inference errors "
+            "for the same batch (default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--max-server-error-cooldowns",
+        type=int,
+        default=30,
+        help=(
+            "Maximum number of provider cooldown waits per request batch before "
+            "failing (default: %(default)s)."
+        ),
     )
     args = parser.parse_args()
 
@@ -489,7 +640,17 @@ def main() -> None:
             args.chunk_size,
         )
         num_chunks = _scatter(
-            new_texts, new_urls, chunk_dir, args.chunk_size, args.use_local,
+            new_texts,
+            new_urls,
+            chunk_dir,
+            args.chunk_size,
+            args.use_local,
+            request_timeout_s=args.request_timeout_s,
+            max_retries=args.max_retries,
+            retry_backoff_s=args.retry_backoff_s,
+            min_split_batch_size=args.min_split_batch_size,
+            server_error_cooldown_s=args.server_error_cooldown_s,
+            max_server_error_cooldowns=args.max_server_error_cooldowns,
         )
         merged = _gather(
             chunk_dir, num_chunks,
@@ -503,6 +664,12 @@ def main() -> None:
             existing_embeddings, existing_urls,
             emb_path, meta_path,
             use_local=args.use_local,
+            request_timeout_s=args.request_timeout_s,
+            max_retries=args.max_retries,
+            retry_backoff_s=args.retry_backoff_s,
+            min_split_batch_size=args.min_split_batch_size,
+            server_error_cooldown_s=args.server_error_cooldown_s,
+            max_server_error_cooldowns=args.max_server_error_cooldowns,
         )
 
     # -- Upload to Hugging Face --------------------------------------------
