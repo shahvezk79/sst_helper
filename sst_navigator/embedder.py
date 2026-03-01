@@ -452,8 +452,10 @@ class SemanticSearcher:
             emb = self._embed_batch(batch, max_tokens)
             all_embeddings.append(emb)
 
-            mx.clear_cache()
-            
+            if self.backend == "mlx":
+                import mlx.core as mx
+                mx.clear_cache()
+
             if progress_callback:
                 progress_callback(progress_start + end, progress_total)
             logger.debug("Embedded %d / %d documents", end, total)

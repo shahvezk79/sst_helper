@@ -94,8 +94,11 @@ class SSTNavigatorPipeline:
         if mode == self.compute_mode:
             return
 
-        # Tear down any locally-loaded reranker / generator.
-        if self._loaded == "reranker":
+        # Tear down any locally-loaded component before switching backend.
+        if self._loaded == "embedder":
+            self._searcher.unload_model()
+            self._loaded = None
+        elif self._loaded == "reranker":
             self._reranker.unload_model()
             self._loaded = None
         elif self._loaded == "generator":
