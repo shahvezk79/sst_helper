@@ -329,11 +329,23 @@ class SemanticSearcher:
 
         hidden_states = self.model(input_ids)  # (batch, seq, hidden)
 
-        # Last-token pooling (official Qwen3 strategy)
-        seq_lengths = mx.sum(attention_mask, axis=1) - 1
-        seq_lengths = mx.maximum(seq_lengths, 0)
-        batch_idx = mx.arange(hidden_states.shape[0])
-        pooled = hidden_states[batch_idx, seq_lengths]  # (batch, hidden)
+        # Last-token pooling (official Qwen3 strategy).
+        # Detect whether the tokenizer applied left- or right-padding
+        # so we pick the correct position.  The official Qwen3
+        # `last_token_pool` checks the same condition.
+        left_padding = bool(
+            mx.sum(attention_mask[:, -1]).item() == attention_mask.shape[0]
+        )
+        if left_padding:
+            # Left-padded: real tokens are right-aligned, so the last
+            # hidden state is always at the final sequence position.
+            pooled = hidden_states[:, -1, :]  # (batch, hidden)
+        else:
+            # Right-padded: find each sequence's last real-token index.
+            seq_lengths = mx.sum(attention_mask, axis=1) - 1
+            seq_lengths = mx.maximum(seq_lengths, 0)
+            batch_idx = mx.arange(hidden_states.shape[0])
+            pooled = hidden_states[batch_idx, seq_lengths]  # (batch, hidden)
 
         # L2 normalise
         norms = mx.linalg.norm(pooled, axis=-1, keepdims=True)

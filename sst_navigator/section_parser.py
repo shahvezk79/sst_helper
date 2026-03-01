@@ -179,8 +179,11 @@ def pack_for_reranker(text: str, char_budget: int) -> str:
     if not sections:
         return text[:char_budget]
 
-    # If the entire cleaned text fits, just return it.
-    total = sum(len(s.text) for s in sections) + len(_SECTION_SEP) * (len(sections) - 1)
+    # If the entire cleaned text (including [name] labels) fits, just return it.
+    total = (
+        sum(len(s.text) + len(s.name) + 3 for s in sections)  # +3 for "[] "
+        + len(_SECTION_SEP) * (len(sections) - 1)
+    )
     if total <= char_budget:
         return _SECTION_SEP.join(f"[{s.name}] {s.text}" for s in sorted(sections, key=lambda s: s.order))
 

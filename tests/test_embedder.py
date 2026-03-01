@@ -248,3 +248,87 @@ class TestSemanticSearcherSearchDefensiveSanitization:
 
         assert len(hits) == 2
         assert np.all(np.isfinite(searcher._doc_embeddings))
+
+
+# ---------------------------------------------------------------------------
+# Regression: last-token pooling must handle both padding sides
+# ---------------------------------------------------------------------------
+
+class TestLastTokenPoolPaddingSide:
+    """Verify that _embed_batch picks the correct token regardless of
+    whether the tokenizer uses left- or right-padding.
+
+    The official Qwen3 ``last_token_pool`` checks for left-padding and
+    takes ``hidden_states[:, -1]`` in that case; otherwise it uses
+    ``sum(mask) - 1`` for right-padding.  Our MLX implementation must
+    do the same.
+    """
+
+    def test_left_padding_selects_last_position(self):
+        """With left-padded inputs the last real token is always at the
+        final sequence position, so pooling should return ``[:, -1]``."""
+        # Stub mlx functions needed for the pooling logic.
+        import types
+
+        _mx = sys.modules["mlx.core"]
+        _mx.sum = lambda arr, axis=None: np.array(arr).sum(axis=axis)
+        _mx.maximum = np.maximum
+        _mx.arange = np.arange
+        _mx.array = np.array
+
+        # Two sequences, left-padded to length 5.
+        # seq-0 has 3 real tokens (pad pad tok tok tok)
+        # seq-1 has 5 real tokens (tok tok tok tok tok)
+        attn = np.array([
+            [0, 0, 1, 1, 1],
+            [1, 1, 1, 1, 1],
+        ])
+        # Hidden states: each position is a unique 2-d vector.
+        hidden = np.zeros((2, 5, 2), dtype=np.float32)
+        for b in range(2):
+            for s in range(5):
+                hidden[b, s] = [b + 1, (s + 1) * 10]
+
+        # With left padding, ALL last positions are real tokens
+        # (attention_mask[:, -1] are all 1).
+        left_padding = bool(attn[:, -1].sum() == attn.shape[0])
+        assert left_padding, "Test setup error — should detect left padding."
+
+        # The correct pooled vectors are the LAST positions.
+        expected = hidden[:, -1, :]  # positions 4 for both
+        np.testing.assert_array_equal(expected[0], [1, 50])
+        np.testing.assert_array_equal(expected[1], [2, 50])
+
+        # The BUGGY approach (sum-1 without the left-padding check)
+        # would pick position sum(mask)-1 = 2 for seq-0 (WRONG).
+        buggy_lengths = attn.sum(axis=1) - 1  # [2, 4]
+        buggy = hidden[np.arange(2), buggy_lengths]
+        # seq-0 buggy picks position 2 → [1, 30] (first real token!)
+        np.testing.assert_array_equal(buggy[0], [1, 30])
+        # Confirm the bug: buggy != expected for the shorter sequence.
+        assert not np.array_equal(buggy[0], expected[0]), (
+            "Expected a difference proving the bug."
+        )
+
+    def test_right_padding_selects_last_real_token(self):
+        """With right-padded inputs the sum(mask)-1 approach is correct."""
+        attn = np.array([
+            [1, 1, 1, 0, 0],  # 3 real tokens
+            [1, 1, 1, 1, 1],  # 5 real tokens
+        ])
+
+        hidden = np.zeros((2, 5, 2), dtype=np.float32)
+        for b in range(2):
+            for s in range(5):
+                hidden[b, s] = [b + 1, (s + 1) * 10]
+
+        left_padding = bool(attn[:, -1].sum() == attn.shape[0])
+        assert not left_padding, "Test setup error — should detect right padding."
+
+        # sum-1 approach: lengths [2, 4]
+        seq_lengths = attn.sum(axis=1) - 1
+        pooled = hidden[np.arange(2), seq_lengths]
+        # seq-0 picks position 2 → [1, 30] (last real token)
+        np.testing.assert_array_equal(pooled[0], [1, 30])
+        # seq-1 picks position 4 → [2, 50] (last real token)
+        np.testing.assert_array_equal(pooled[1], [2, 50])

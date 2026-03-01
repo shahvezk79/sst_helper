@@ -351,3 +351,34 @@ class TestPackForReranker:
         result = pack_for_reranker(CPPD_DECISION, char_budget=100_000)
         assert "[Severe]" in result
         assert "[Prolonged]" in result
+
+    def test_early_return_path_respects_budget_with_labels(self):
+        """Regression: the early-return path must account for [name] label
+        overhead when checking whether the full text fits in the budget.
+
+        Previously the budget check summed raw section text lengths but the
+        output added ``[{name}] `` prefixes, causing the result to exceed
+        the budget.
+        """
+        sections = parse_sections(MODERN_DECISION)
+        # Compute what the actual output length would be with labels.
+        sep = "\n\n"
+        labeled_total = (
+            sum(len(s.text) + len(s.name) + 3 for s in sections)  # +3 for "[] "
+            + len(sep) * (len(sections) - 1)
+        )
+        # Set a budget that is slightly ABOVE the raw text total but
+        # BELOW the labeled total — this is the range that triggered
+        # the old bug (early-return firing when it shouldn't).
+        raw_total = (
+            sum(len(s.text) for s in sections)
+            + len(sep) * (len(sections) - 1)
+        )
+        budget = raw_total + 5  # fits raw text, not labeled text
+        assert budget < labeled_total, "Test setup: budget must be below labeled total."
+
+        result = pack_for_reranker(MODERN_DECISION, char_budget=budget)
+        assert len(result) <= budget, (
+            f"Output ({len(result)} chars) exceeded budget ({budget} chars) "
+            f"by {len(result) - budget} chars."
+        )
