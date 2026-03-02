@@ -13,7 +13,7 @@ Follow these commands in order. You can copy and paste them directly into your *
 ### 1. Clone the Repository
 First, download the project files from GitHub:
 ```bash
-git clone [https://github.com/shahvezk79/sst_helper.git](https://github.com/shahvezk79/sst_helper.git)
+git clone https://github.com/shahvezk79/sst_helper.git
 cd sst_helper
 ```
 
@@ -25,9 +25,14 @@ source venv/bin/activate
 ```
 
 ### 3. Install Dependencies
-Install the necessary libraries, including the MLX framework for Apple Silicon and the Streamlit interface:
+Install the core libraries (including Streamlit):
 ```bash
 pip install -r requirements.txt
+```
+
+If you want to run fully local inference on Apple Silicon (`compute_mode="local"`), install MLX packages separately:
+```bash
+pip install mlx mlx-lm transformers tokenizers
 ```
 
 ### 4. Set Up Your API Key
