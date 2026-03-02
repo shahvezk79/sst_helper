@@ -8,6 +8,7 @@ streamlit>=1.35
 # Cloud compute — DeepInfra embedding, reranking, and generation
 openai>=1.30      # OpenAI-compatible client (used for DeepInfra embedding + generation)
 requests>=2.31    # Used for DeepInfra reranker (native inference endpoint)
+certifi>=2024.2.2 # CA bundle fallback for SSL verification on some local Python installs
 
 # Local inference — Apple Silicon only (install separately on M-series Macs)
 # These are required only when using compute_mode="local" (MLX backend).

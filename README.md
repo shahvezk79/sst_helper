@@ -49,3 +49,36 @@ Once installed, you can launch the navigator with a single command:
 ```bash
 streamlit run app.py
 ```
+
+
+## Troubleshooting SSL Certificate Errors
+
+If initialization fails with `CERTIFICATE_VERIFY_FAILED` (in Streamlit or terminal logs), your Python environment cannot validate HTTPS certificates.
+
+1. Update dependencies (includes `certifi`):
+   ```bash
+   pip install -r requirements.txt --upgrade
+   ```
+2. On macOS Python.org builds, run the certificate installer once:
+   ```bash
+   open "/Applications/Python 3.x/Install Certificates.command"
+   ```
+3. If needed, force Python to use `certifi`'s CA bundle:
+   ```bash
+   export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
+   export REQUESTS_CA_BUNDLE=$SSL_CERT_FILE
+   ```
+4. If you are on a corporate network with SSL inspection, point the app to your organization's CA certificate:
+   ```bash
+   export SST_NAVIGATOR_CA_BUNDLE=/path/to/your-company-ca.pem
+   ```
+5. Last-resort temporary workaround (not recommended):
+   ```bash
+   export SST_NAVIGATOR_DISABLE_SSL_VERIFY=1
+   ```
+
+Then restart Streamlit:
+```bash
+streamlit run app.py
+```
+
