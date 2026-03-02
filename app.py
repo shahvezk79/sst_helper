@@ -58,9 +58,9 @@ def get_pipeline() -> SSTNavigatorPipeline:
     """Return (or create) the singleton pipeline in session state."""
     if "pipeline" not in st.session_state:
         st.session_state.pipeline = SSTNavigatorPipeline(
-            dev_mode=True,
+            dev_mode=False,
             generation_backend="mlx",
-            compute_mode="local",
+            compute_mode="cloud",
             fast_mode=False,
         )
     return st.session_state.pipeline
