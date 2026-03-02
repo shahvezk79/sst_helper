@@ -301,3 +301,59 @@ class TestSemanticSearcherSearchDefensiveSanitization:
 
         assert len(hits) == 2
         assert np.all(np.isfinite(searcher._doc_embeddings))
+
+    def test_matmul_suppresses_blas_warnings(self):
+        """The np.errstate guard must suppress platform-specific BLAS
+        RuntimeWarnings (e.g. Apple Accelerate AMX) without losing results."""
+        import warnings
+
+        searcher = SemanticSearcher()
+        # Clean, unit-normalised embeddings — should never produce warnings
+        # on standard BLAS, but the errstate guard is there for exotic ones.
+        searcher._doc_embeddings = _l2_normalize_rows(
+            np.array([[3.0, 4.0], [0.0, 5.0], [1.0, 1.0]], dtype=np.float32)
+        )
+        searcher._embed_batch = lambda texts, max_tokens: _l2_normalize_rows(
+            np.array([[1.0, 0.0]], dtype=np.float32)
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # Would raise if any warning leaks
+            hits = searcher.search("test query", top_k=3)
+
+        assert len(hits) == 3
+        # All scores should be finite and in [-1, 1]
+        for _, score in hits:
+            assert np.isfinite(score)
+            assert -1.0 - 1e-6 <= score <= 1.0 + 1e-6
+
+    def test_non_finite_scores_logged_and_clamped(self, caplog):
+        """If the matmul somehow produces NaN/Inf scores (platform BLAS
+        artifact), they should be logged and clamped to -1."""
+        import logging
+
+        searcher = SemanticSearcher()
+        searcher._embed_batch = lambda texts, max_tokens: _l2_normalize_rows(
+            np.array([[0.6, 0.8]], dtype=np.float32)
+        )
+
+        # Use a numpy subclass whose __matmul__ injects a NaN into the
+        # result, simulating a platform BLAS artifact from Apple Accelerate.
+        class _NaNMatmul(np.ndarray):
+            def __matmul__(self, other):
+                result = np.asarray(self).astype(np.float32) @ other
+                result[0] = np.nan
+                return result
+
+        doc_emb = _l2_normalize_rows(
+            np.array([[3.0, 4.0], [1.0, 0.0]], dtype=np.float32)
+        )
+        searcher._doc_embeddings = doc_emb.view(_NaNMatmul)
+
+        with caplog.at_level(logging.WARNING, logger="sst_navigator.embedder"):
+            hits = searcher.search("test", top_k=2)
+
+        # The NaN score should have been clamped to -1
+        assert len(hits) == 2
+        assert all(np.isfinite(s) for _, s in hits)
+        assert any("non-finite similarity scores" in r.message for r in caplog.records)

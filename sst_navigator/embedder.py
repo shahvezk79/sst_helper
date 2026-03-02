@@ -532,12 +532,27 @@ class SemanticSearcher:
             )
             self._doc_embeddings = _sanitize_and_normalize_rows(self._doc_embeddings)
 
-        # Cosine similarity (vectors are unit-normalised → dot product)
-        scores = self._doc_embeddings @ q_vec.T  # (n_docs, 1)
+        # Cosine similarity (vectors are unit-normalised → dot product).
+        # np.errstate suppresses spurious RuntimeWarnings that Apple's
+        # Accelerate BLAS (AMX-backed SGEMM) can emit during float32
+        # matmul even when both operands are finite unit vectors.  The
+        # post-matmul nan_to_num below handles any genuinely non-finite
+        # scores that may result on affected platforms.
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            scores = self._doc_embeddings @ q_vec.T  # (n_docs, 1)
         scores = scores.squeeze(-1)
 
-        # Replace any residual NaN (e.g. 0-vec · 0-vec) with -1 so they
-        # sort last instead of polluting argsort.
+        # Replace any residual NaN (e.g. 0-vec · 0-vec, or platform-
+        # specific BLAS artifacts) with -1 so they sort last instead of
+        # polluting argsort.
+        n_bad_scores = int((~np.isfinite(scores)).sum())
+        if n_bad_scores:
+            logger.warning(
+                "matmul produced %d non-finite similarity scores out of %d "
+                "(likely a platform BLAS artifact); clamping to -1.",
+                n_bad_scores,
+                scores.shape[0],
+            )
         np.nan_to_num(scores, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
 
         top_indices = np.argsort(scores)[::-1][:top_k]
