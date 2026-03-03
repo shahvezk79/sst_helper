@@ -7,9 +7,9 @@ Supports two backends:
 """
 
 import logging
-import os
 
 from . import config
+from .auth import deepinfra_auth_error_hint, get_deepinfra_api_key
 from .section_parser import pack_for_reranker
 
 logger = logging.getLogger(__name__)
@@ -120,9 +120,7 @@ class Reranker:
         """Score all documents in one API call via DeepInfra."""
         import requests
 
-        api_key = os.environ.get("DEEPINFRA_API_KEY")
-        if not api_key:
-            raise RuntimeError("Set DEEPINFRA_API_KEY in your environment.")
+        api_key = get_deepinfra_api_key()
 
         # Prepend the task instruction to the query so the model can
         # leverage it for relevance judgement (same info as the local
@@ -141,7 +139,12 @@ class Reranker:
             },
             timeout=120,
         )
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            if resp.status_code in {401, 403}:
+                raise RuntimeError(deepinfra_auth_error_hint()) from exc
+            raise
         data = resp.json()
 
         scores = data["scores"]

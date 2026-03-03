@@ -51,6 +51,30 @@ streamlit run app.py
 ```
 
 
+
+## Troubleshooting 401 Authentication Errors (DeepInfra)
+
+If search fails with `openai.AuthenticationError: 401` and a message like
+`User is not authorized to access this resource`, check:
+
+1. `DEEPINFRA_API_KEY` is set (not just `OPENAI_API_KEY`).
+2. The key value has no extra quotes or spaces.
+3. Your DeepInfra account/key can access the configured models (Qwen3 embedding/reranker/generation).
+
+On Windows PowerShell, set it like this (current session):
+
+```powershell
+$env:DEEPINFRA_API_KEY = "your_deepinfra_key"
+```
+
+And persist for new terminals:
+
+```powershell
+setx DEEPINFRA_API_KEY "your_deepinfra_key"
+```
+
+Then close/reopen the terminal and rerun Streamlit.
+
 ## Troubleshooting SSL Certificate Errors
 
 If initialization fails with `CERTIFICATE_VERIFY_FAILED` (in Streamlit or terminal logs), your Python environment cannot validate HTTPS certificates.
