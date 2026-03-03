@@ -11,13 +11,13 @@ Supports two backends:
 
 import logging
 import json
-import os
 from pathlib import Path
 
 import numpy as np
 from huggingface_hub import hf_hub_download
 
 from . import config
+from .auth import deepinfra_auth_error_hint, get_deepinfra_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -356,18 +356,19 @@ class SemanticSearcher:
 
     def _embed_batch_deepinfra(self, texts: list[str]) -> np.ndarray:
         """Embed texts via the DeepInfra OpenAI-compatible embeddings API."""
-        from openai import OpenAI
+        from openai import AuthenticationError, OpenAI
 
-        api_key = os.environ.get("DEEPINFRA_API_KEY")
-        if not api_key:
-            raise RuntimeError("Set DEEPINFRA_API_KEY in your environment.")
+        api_key = get_deepinfra_api_key()
 
         client = OpenAI(api_key=api_key, base_url=config.DEEPINFRA_BASE_URL)
-        response = client.embeddings.create(
-            input=texts,
-            model=config.DEEPINFRA_EMBEDDING_MODEL,
-            encoding_format="float",
-        )
+        try:
+            response = client.embeddings.create(
+                input=texts,
+                model=config.DEEPINFRA_EMBEDDING_MODEL,
+                encoding_format="float",
+            )
+        except AuthenticationError as exc:
+            raise RuntimeError(deepinfra_auth_error_hint()) from exc
         vectors = np.array(
             [item.embedding for item in response.data], dtype=np.float32
         )

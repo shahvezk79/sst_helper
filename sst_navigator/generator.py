@@ -14,6 +14,7 @@ import os
 import re
 
 from . import config
+from .auth import deepinfra_auth_error_hint, get_deepinfra_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -211,13 +212,11 @@ class CaseCardGenerator:
         max_chars: int = config.GENERATION_MAX_CHARS,
     ) -> str:
         try:
-            from openai import OpenAI
+            from openai import AuthenticationError, OpenAI
         except ImportError:
             raise ImportError("pip install openai  to use the DeepInfra backend.")
 
-        api_key = os.environ.get("DEEPINFRA_API_KEY")
-        if not api_key:
-            raise RuntimeError("Set DEEPINFRA_API_KEY in your environment.")
+        api_key = get_deepinfra_api_key()
 
         client = OpenAI(
             api_key=api_key,
@@ -225,13 +224,16 @@ class CaseCardGenerator:
         )
         truncated = decision_text[:max_chars]
 
-        resp = client.chat.completions.create(
-            model=config.DEEPINFRA_GENERATION_MODEL,
-            messages=[
-                {"role": "system", "content": _CASE_CARD_SYSTEM},
-                {"role": "user", "content": f"Here is the tribunal decision:\n\n{truncated}"},
-            ],
-            max_tokens=max_tokens,
-            temperature=0.3,
-        )
+        try:
+            resp = client.chat.completions.create(
+                model=config.DEEPINFRA_GENERATION_MODEL,
+                messages=[
+                    {"role": "system", "content": _CASE_CARD_SYSTEM},
+                    {"role": "user", "content": f"Here is the tribunal decision:\n\n{truncated}"},
+                ],
+                max_tokens=max_tokens,
+                temperature=0.3,
+            )
+        except AuthenticationError as exc:
+            raise RuntimeError(deepinfra_auth_error_hint()) from exc
         return _sanitize_case_card_output(resp.choices[0].message.content)
