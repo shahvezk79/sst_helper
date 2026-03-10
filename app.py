@@ -291,6 +291,7 @@ st.markdown(
     .case-card {
         background: linear-gradient(135deg, #f0fdf4 0%, #f8fafc 100%);
         border-left: 3px solid #10b981;
+        color: #0f172a;
         padding: 1.5rem 1.75rem;
         border-radius: 0 12px 12px 0;
         line-height: 1.75;
