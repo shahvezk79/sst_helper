@@ -42,6 +42,12 @@ RERANKER_INSTRUCTION = (
 )
 RERANKER_MAX_TOKENS = 8192
 FAST_RERANKER_MAX_TOKENS = 2048
+# Temperature for score calibration.  The raw 2-token softmax (yes/no)
+# produces overconfident scores (e.g. 99.2–99.9%).  Dividing the logits
+# by a temperature > 1 before softmax spreads the distribution into a
+# more interpretable range.  T=3.0 maps typical raw scores of 0.99–1.0
+# to roughly 0.75–0.95.  Set to 1.0 to disable calibration.
+RERANKER_TEMPERATURE = 3.0
 
 # --- Generation parameters ---
 GENERATION_MAX_TOKENS = 1536

@@ -7,6 +7,7 @@ Supports two backends:
 """
 
 import logging
+import math
 
 from . import config
 from .auth import deepinfra_auth_error_hint, get_deepinfra_api_key
@@ -106,9 +107,12 @@ class Reranker:
         yes_logit = last_logits[:, self._token_yes]
         no_logit = last_logits[:, self._token_no]
 
-        # Stack [no, yes] and softmax → P(yes) is the relevance score
+        # Stack [no, yes] and apply temperature-scaled softmax.
+        # Temperature > 1 spreads the distribution so scores are not
+        # compressed into the 99–100% range.
         stacked = mx.concatenate([no_logit, yes_logit], axis=0)  # (2,)
-        probs = mx.softmax(stacked)
+        temperature = config.RERANKER_TEMPERATURE
+        probs = mx.softmax(stacked / temperature)
         score = probs[1].item()
         return float(score)
 
@@ -152,6 +156,25 @@ class Reranker:
         if scores and isinstance(scores[0], list):
             scores = scores[0]
         return [float(s) for s in scores]
+
+    # -- Score calibration -------------------------------------------------
+
+    @staticmethod
+    def _calibrate_score(raw_score: float) -> float:
+        """Apply temperature scaling to a raw reranker probability.
+
+        Converts P(yes) back to log-odds, divides by the configured
+        temperature, and converts back to a probability.  This spreads
+        scores that cluster near 1.0 into a more interpretable range.
+        Returns the raw score unchanged when temperature is 1.0.
+        """
+        temperature = config.RERANKER_TEMPERATURE
+        if temperature == 1.0:
+            return raw_score
+        # Clamp to avoid log(0) / division-by-zero
+        p = max(min(raw_score, 1.0 - 1e-9), 1e-9)
+        log_odds = math.log(p / (1.0 - p))
+        return 1.0 / (1.0 + math.exp(-log_odds / temperature))
 
     # -- Score diagnostics -------------------------------------------------
 
@@ -237,9 +260,10 @@ class Reranker:
         scores = self._score_batch_deepinfra(query, documents)
 
         for cand, score in zip(candidates, scores):
-            cand["reranker_score"] = score
+            cand["reranker_score"] = self._calibrate_score(score)
             logger.debug(
-                "  candidate %s → %.4f", cand.get("name", "?"), score
+                "  candidate %s → %.4f (raw %.4f)",
+                cand.get("name", "?"), cand["reranker_score"], score,
             )
 
         ranked = sorted(candidates, key=lambda c: c["reranker_score"], reverse=True)
