@@ -7,6 +7,7 @@ Supports two backends:
 """
 
 import logging
+import math
 
 from . import config
 from .auth import deepinfra_auth_error_hint, get_deepinfra_api_key
@@ -106,9 +107,12 @@ class Reranker:
         yes_logit = last_logits[:, self._token_yes]
         no_logit = last_logits[:, self._token_no]
 
-        # Stack [no, yes] and softmax → P(yes) is the relevance score
+        # Stack [no, yes] and apply temperature-scaled softmax.
+        # Temperature > 1 spreads the distribution so scores are not
+        # compressed into the 99–100% range.
         stacked = mx.concatenate([no_logit, yes_logit], axis=0)  # (2,)
-        probs = mx.softmax(stacked)
+        temperature = config.RERANKER_TEMPERATURE
+        probs = mx.softmax(stacked / temperature)
         score = probs[1].item()
         return float(score)
 
@@ -153,6 +157,53 @@ class Reranker:
             scores = scores[0]
         return [float(s) for s in scores]
 
+    # -- Score calibration -------------------------------------------------
+
+    @staticmethod
+    def _calibrate_score(raw_score: float) -> float:
+        """Apply temperature scaling to a raw reranker probability.
+
+        Converts P(yes) back to log-odds, divides by the configured
+        temperature, and converts back to a probability.  This spreads
+        scores that cluster near 1.0 into a more interpretable range.
+        Returns the raw score unchanged when temperature is 1.0.
+        """
+        temperature = config.RERANKER_TEMPERATURE
+        if temperature == 1.0:
+            return raw_score
+        # Clamp to avoid log(0) / division-by-zero
+        p = max(min(raw_score, 1.0 - 1e-9), 1e-9)
+        log_odds = math.log(p / (1.0 - p))
+        return 1.0 / (1.0 + math.exp(-log_odds / temperature))
+
+    # -- Score diagnostics -------------------------------------------------
+
+    @staticmethod
+    def _log_score_distribution(candidates: list[dict]) -> None:
+        """Log summary statistics for reranker scores to aid calibration."""
+        scores = [c["reranker_score"] for c in candidates if "reranker_score" in c]
+        if not scores:
+            return
+        scores.sort(reverse=True)
+        n = len(scores)
+        mean = sum(scores) / n
+        top = scores[0]
+        bottom = scores[-1]
+        median = scores[n // 2]
+        spread = top - bottom
+        logger.info(
+            "Reranker score distribution (n=%d): "
+            "max=%.4f  median=%.4f  min=%.4f  mean=%.4f  spread=%.4f",
+            n, top, median, bottom, mean, spread,
+        )
+        # Flag compressed distributions where ranking signal may be weak
+        if spread < 0.05 and n > 1:
+            logger.warning(
+                "Score spread is very narrow (%.4f) — ranking signal may be weak. "
+                "Consider inspecting query specificity or candidate diversity.",
+                spread,
+            )
+
     # -- Public API --------------------------------------------------------
 
     def rerank(
@@ -190,6 +241,7 @@ class Reranker:
             )
 
         ranked = sorted(candidates, key=lambda c: c["reranker_score"], reverse=True)
+        self._log_score_distribution(candidates)
         return ranked[:top_k]
 
     def _rerank_deepinfra(
@@ -208,10 +260,12 @@ class Reranker:
         scores = self._score_batch_deepinfra(query, documents)
 
         for cand, score in zip(candidates, scores):
-            cand["reranker_score"] = score
+            cand["reranker_score"] = self._calibrate_score(score)
             logger.debug(
-                "  candidate %s → %.4f", cand.get("name", "?"), score
+                "  candidate %s → %.4f (raw %.4f)",
+                cand.get("name", "?"), cand["reranker_score"], score,
             )
 
         ranked = sorted(candidates, key=lambda c: c["reranker_score"], reverse=True)
+        self._log_score_distribution(candidates)
         return ranked[:top_k]
