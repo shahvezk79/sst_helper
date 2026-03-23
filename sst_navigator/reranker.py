@@ -153,6 +153,34 @@ class Reranker:
             scores = scores[0]
         return [float(s) for s in scores]
 
+    # -- Score diagnostics -------------------------------------------------
+
+    @staticmethod
+    def _log_score_distribution(candidates: list[dict]) -> None:
+        """Log summary statistics for reranker scores to aid calibration."""
+        scores = [c["reranker_score"] for c in candidates if "reranker_score" in c]
+        if not scores:
+            return
+        scores.sort(reverse=True)
+        n = len(scores)
+        mean = sum(scores) / n
+        top = scores[0]
+        bottom = scores[-1]
+        median = scores[n // 2]
+        spread = top - bottom
+        logger.info(
+            "Reranker score distribution (n=%d): "
+            "max=%.4f  median=%.4f  min=%.4f  mean=%.4f  spread=%.4f",
+            n, top, median, bottom, mean, spread,
+        )
+        # Flag compressed distributions where ranking signal may be weak
+        if spread < 0.05 and n > 1:
+            logger.warning(
+                "Score spread is very narrow (%.4f) — ranking signal may be weak. "
+                "Consider inspecting query specificity or candidate diversity.",
+                spread,
+            )
+
     # -- Public API --------------------------------------------------------
 
     def rerank(
@@ -190,6 +218,7 @@ class Reranker:
             )
 
         ranked = sorted(candidates, key=lambda c: c["reranker_score"], reverse=True)
+        self._log_score_distribution(candidates)
         return ranked[:top_k]
 
     def _rerank_deepinfra(
@@ -214,4 +243,5 @@ class Reranker:
             )
 
         ranked = sorted(candidates, key=lambda c: c["reranker_score"], reverse=True)
+        self._log_score_distribution(candidates)
         return ranked[:top_k]
