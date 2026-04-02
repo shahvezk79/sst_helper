@@ -1,21 +1,5 @@
 # SST Decision Navigator
 
-## Start Here (Grading & Review Map)
-
-If you are reviewing this project for class or peer feedback, use this order:
-
-1. **Submission plan and checklist**: `docs/submission_pack.md`
-2. **Primary notebook**: `sst_helper_notebook.ipynb`
-3. **Static exports** (generated): `deliverables/sst_helper_notebook.html` and `deliverables/sst_helper_notebook.pdf`
-4. **Pipeline visual**: `docs/how_it_works_diagram.md`
-5. **Worked examples appendix**: `docs/worked_examples_appendix.md`
-
-To generate HTML/PDF exports quickly:
-
-```bash
-bash scripts/export_notebook_bundle.sh
-```
-
 This guide provides step-by-step instructions to set up the SST Decision Navigator on your local machine. This tool is designed for Apple Silicon (M1/M2/M3) Macs to provide high-performance legal search and analysis.
 
 ## Prerequisites
