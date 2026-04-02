@@ -40,6 +40,8 @@ class SearchResult:
     recency_label: str = "Unknown"   # "Recent" / "Older" / "Historical"
     authority_risk: str = "Medium"   # "Low" / "Medium" / "Verify"
     outcome: str = "Unknown"         # "Allowed" / "Dismissed" / "Unknown"
+    # --- Layer 3: fast-mode landscape role ---
+    landscape_role: str = ""         # "supportive" / "unsupportive" / "context" / ""
 
 
 @dataclass
@@ -48,6 +50,7 @@ class PipelineOutput:
     case_card: str | None = None
     results: list[SearchResult] = field(default_factory=list)
     outcome_diversity: bool = True  # False → all top results share the same outcome
+    landscape_mode: bool = False    # True when fast mode returns labeled landscape pairs
 
 
 class SSTNavigatorPipeline:
@@ -238,14 +241,19 @@ class SSTNavigatorPipeline:
 
     # -- Search ------------------------------------------------------------
 
-    def generate_case_card(self, decision_text: str) -> str:
-        """Generate a case card for a selected decision text on demand."""
+    def generate_case_card(self, decision_text: str, grounded: bool = False) -> str:
+        """Generate a case card for a selected decision text on demand.
+
+        When *grounded* is True, claims in the summary include paragraph
+        references and explicit/inferred confidence markers.
+        """
         params = self._active_params()
         self._load_component("generator")
         return self._generator.generate_case_card(
             decision_text,
             max_tokens=params["generation_max_tokens"],
             max_chars=params["generation_max_chars"],
+            grounded=grounded,
         )
 
     def search(self, query: str, include_case_card: bool = True) -> PipelineOutput:
@@ -333,9 +341,51 @@ class SSTNavigatorPipeline:
         if include_case_card:
             case_card = self.generate_case_card(top_results[0]["text"])
 
+        # ---- Fast-mode landscape pairing ------------------------------------
+        # In fast mode, instead of returning the top 3 by score, we label
+        # results by their role in a balanced "legal landscape":
+        #   - supportive:   could support the user's position (Allowed)
+        #   - unsupportive: could weaken the user's position (Dismissed)
+        #   - context:      procedural/nuance case (Unknown or extra)
+        landscape_mode = False
+        if self.fast_mode and len(top_results) >= 2:
+            landscape_mode = True
+            labeled: list[tuple[dict, str]] = []
+
+            supportive = [r for r in top_results if r["outcome"] == "Allowed"]
+            unsupportive = [r for r in top_results if r["outcome"] == "Dismissed"]
+            context = [r for r in top_results if r["outcome"] == "Unknown"]
+
+            if supportive:
+                labeled.append((supportive[0], "supportive"))
+            if unsupportive:
+                labeled.append((unsupportive[0], "unsupportive"))
+
+            # Fill remaining slots (up to 3 total) with context cases
+            used = {id(t[0]) for t in labeled}
+            for r in context:
+                if len(labeled) < 3 and id(r) not in used:
+                    labeled.append((r, "context"))
+
+            # If we still have fewer than 3 and there are unused results,
+            # add the next best regardless of outcome
+            for r in top_results:
+                if len(labeled) >= 3:
+                    break
+                if id(r) not in used:
+                    role = ("supportive" if r["outcome"] == "Allowed"
+                            else "unsupportive" if r["outcome"] == "Dismissed"
+                            else "context")
+                    labeled.append((r, role))
+                    used.add(id(r))
+
+            top_results_labeled = labeled
+        else:
+            top_results_labeled = [(r, "") for r in top_results]
+
         # ---- Assemble output ---------------------------------------------
         results = []
-        for rank, r in enumerate(top_results, 1):
+        for rank, (r, role) in enumerate(top_results_labeled, 1):
             results.append(SearchResult(
                 rank=rank,
                 name=r["name"],
@@ -349,10 +399,12 @@ class SSTNavigatorPipeline:
                 recency_label=r["recency_label"],
                 authority_risk=r["authority_risk"],
                 outcome=r["outcome"],
+                landscape_role=role,
             ))
 
         return PipelineOutput(
             case_card=case_card,
             results=results,
             outcome_diversity=diversity_ok,
+            landscape_mode=landscape_mode,
         )
