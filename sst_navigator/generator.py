@@ -29,6 +29,39 @@ _CASE_CARD_SYSTEM = (
     "Be concise. Use simple language. Do not invent facts."
 )
 
+# Grounded variant: produces structured claims with source citations.
+# Each claim is linked back to the decision text with paragraph references
+# and confidence markers so users can verify every statement.
+_GROUNDED_CASE_CARD_SYSTEM = (
+    "You are a legal-aid assistant. Read the tribunal decision below and "
+    "produce a GROUNDED plain-language summary. Every factual claim must be "
+    "traceable to the source text.\n\n"
+    "Output EXACTLY four sections with these headings:\n\n"
+    "**Issue:** (What legal question was the tribunal deciding?)\n"
+    "**Key Facts:** (What were the most important facts?)\n"
+    "**Test Applied:** (What legal test or criteria did the tribunal use?)\n"
+    "**Outcome:** (What did the tribunal decide, and why?)\n\n"
+    "IMPORTANT FORMATTING RULES:\n"
+    "- Write each key claim as a bullet point starting with '- '\n"
+    "- After each claim, add a source line on the next line:\n"
+    "  [Source: para X-Y | explicit] if the decision directly states this\n"
+    "  [Source: para X-Y | inferred] if you are drawing a reasonable inference\n"
+    "- 'para' numbers refer to the paragraph position in the decision text "
+    "(count from the start of the document, roughly by line breaks)\n"
+    "- If a claim cannot be tied to a specific paragraph, write:\n"
+    "  [Source: general context | inferred]\n"
+    "- Do NOT invent facts. If something is unclear, say so.\n"
+    "- Use simple language a non-lawyer can understand.\n\n"
+    "Example format:\n"
+    "**Key Facts:**\n"
+    "- The appellant worked as a truck driver for 12 years before his injury.\n"
+    "  [Source: para 3-4 | explicit]\n"
+    "- His doctor believes he cannot return to physical labour.\n"
+    "  [Source: para 8 | explicit]\n"
+    "- He may have the ability to do sedentary work with retraining.\n"
+    "  [Source: para 15-16 | inferred]\n"
+)
+
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
 
@@ -47,12 +80,14 @@ def _sanitize_case_card_output(text: str) -> str:
 def _build_prompt(
     decision_text: str,
     max_chars: int = config.GENERATION_MAX_CHARS,
+    grounded: bool = False,
 ) -> str:
     """Wrap the decision text into a chat prompt."""
+    system = _GROUNDED_CASE_CARD_SYSTEM if grounded else _CASE_CARD_SYSTEM
     # Truncate to fit context — leave room for system prompt + output
     truncated = decision_text[:max_chars]
     return (
-        f"<|im_start|>system\n{_CASE_CARD_SYSTEM}<|im_end|>\n"
+        f"<|im_start|>system\n{system}<|im_end|>\n"
         f"<|im_start|>user\n"
         f"Here is the tribunal decision:\n\n{truncated}<|im_end|>\n"
         f"<|im_start|>assistant\n"
@@ -106,16 +141,24 @@ class CaseCardGenerator:
         decision_text: str,
         max_tokens: int = config.GENERATION_MAX_TOKENS,
         max_chars: int = config.GENERATION_MAX_CHARS,
+        grounded: bool = False,
     ) -> str:
-        """Return a formatted case-card string for the given decision."""
+        """Return a formatted case-card string for the given decision.
+
+        When *grounded* is True, the prompt requires the model to attach
+        source paragraph references and confidence markers (explicit /
+        inferred) to every factual claim.
+        """
+        kwargs = dict(decision_text=decision_text, max_tokens=max_tokens,
+                      max_chars=max_chars, grounded=grounded)
         if self.backend == "mlx":
-            return self._generate_mlx(decision_text, max_tokens=max_tokens, max_chars=max_chars)
+            return self._generate_mlx(**kwargs)
         if self.backend == "openai":
-            return self._generate_openai(decision_text, max_tokens=max_tokens, max_chars=max_chars)
+            return self._generate_openai(**kwargs)
         if self.backend == "gemini":
-            return self._generate_gemini(decision_text, max_tokens=max_tokens, max_chars=max_chars)
+            return self._generate_gemini(**kwargs)
         if self.backend == "deepinfra":
-            return self._generate_deepinfra(decision_text, max_tokens=max_tokens, max_chars=max_chars)
+            return self._generate_deepinfra(**kwargs)
         raise ValueError(f"Unknown backend: {self.backend}")
 
     # -- MLX ---------------------------------------------------------------
@@ -125,12 +168,13 @@ class CaseCardGenerator:
         decision_text: str,
         max_tokens: int = config.GENERATION_MAX_TOKENS,
         max_chars: int = config.GENERATION_MAX_CHARS,
+        grounded: bool = False,
     ) -> str:
         from mlx_lm import generate as mlx_generate
 
         if self._model is None:
             raise RuntimeError("Call load_model() first.")
-        prompt = _build_prompt(decision_text, max_chars=max_chars)
+        prompt = _build_prompt(decision_text, max_chars=max_chars, grounded=grounded)
         response = mlx_generate(
             self._model,
             self._tokenizer,
@@ -147,6 +191,7 @@ class CaseCardGenerator:
         decision_text: str,
         max_tokens: int = config.GENERATION_MAX_TOKENS,
         max_chars: int = config.GENERATION_MAX_CHARS,
+        grounded: bool = False,
     ) -> str:
         try:
             from openai import OpenAI
@@ -159,11 +204,12 @@ class CaseCardGenerator:
 
         client = OpenAI(api_key=api_key)
         truncated = decision_text[:max_chars]
+        system = _GROUNDED_CASE_CARD_SYSTEM if grounded else _CASE_CARD_SYSTEM
 
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": _CASE_CARD_SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": f"Here is the tribunal decision:\n\n{truncated}"},
             ],
             max_tokens=max_tokens,
@@ -178,6 +224,7 @@ class CaseCardGenerator:
         decision_text: str,
         max_tokens: int = config.GENERATION_MAX_TOKENS,
         max_chars: int = config.GENERATION_MAX_CHARS,
+        grounded: bool = False,
     ) -> str:
         try:
             import google.generativeai as genai
@@ -193,9 +240,10 @@ class CaseCardGenerator:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.0-flash")
         truncated = decision_text[:max_chars]
+        system = _GROUNDED_CASE_CARD_SYSTEM if grounded else _CASE_CARD_SYSTEM
 
         resp = model.generate_content(
-            f"{_CASE_CARD_SYSTEM}\n\nHere is the tribunal decision:\n\n{truncated}",
+            f"{system}\n\nHere is the tribunal decision:\n\n{truncated}",
             generation_config=genai.GenerationConfig(
                 max_output_tokens=max_tokens,
                 temperature=0.3,
@@ -210,6 +258,7 @@ class CaseCardGenerator:
         decision_text: str,
         max_tokens: int = config.GENERATION_MAX_TOKENS,
         max_chars: int = config.GENERATION_MAX_CHARS,
+        grounded: bool = False,
     ) -> str:
         try:
             from openai import AuthenticationError, OpenAI
@@ -223,12 +272,13 @@ class CaseCardGenerator:
             base_url=config.DEEPINFRA_BASE_URL,
         )
         truncated = decision_text[:max_chars]
+        system = _GROUNDED_CASE_CARD_SYSTEM if grounded else _CASE_CARD_SYSTEM
 
         try:
             resp = client.chat.completions.create(
                 model=config.DEEPINFRA_GENERATION_MODEL,
                 messages=[
-                    {"role": "system", "content": _CASE_CARD_SYSTEM},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": f"Here is the tribunal decision:\n\n{truncated}"},
                 ],
                 max_tokens=max_tokens,

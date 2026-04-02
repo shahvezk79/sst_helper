@@ -11,6 +11,7 @@ import re
 
 import streamlit as st
 
+from sst_navigator.glossary import detect_terms
 from sst_navigator.pipeline import SSTNavigatorPipeline, SearchResult
 
 # ---------------------------------------------------------------------------
@@ -162,6 +163,91 @@ def _authority_badges_html(r: SearchResult) -> str:
         badges += f'<span class="auth-badge {outcome_cls}">Outcome: {r.outcome}</span>'
 
     return f'<div class="auth-badges">{badges}</div>'
+
+
+def _score_legend_html() -> str:
+    """Render the similarity score interpretation legend."""
+    return (
+        '<div class="score-legend">'
+        '<div class="score-legend-title">Understanding similarity scores</div>'
+        '<div class="score-legend-row">'
+        '<span class="score-legend-dot score-legend-dot-high"></span>'
+        '<span><strong>85%+</strong> &mdash; Close semantic match '
+        '(language and facts closely align)</span></div>'
+        '<div class="score-legend-row">'
+        '<span class="score-legend-dot score-legend-dot-mod"></span>'
+        '<span><strong>70&ndash;84%</strong> &mdash; Moderate match '
+        '(some relevant facts/language overlap)</span></div>'
+        '<div class="score-legend-row">'
+        '<span class="score-legend-dot score-legend-dot-low"></span>'
+        '<span><strong>&lt;70%</strong> &mdash; Weaker match '
+        '(fewer shared language patterns)</span></div>'
+        '<div class="score-legend-note">'
+        'Similarity reflects language and fact-pattern closeness, '
+        'not whether the case is still good law or legally correct. '
+        'Always verify with current sources.</div>'
+        '</div>'
+    )
+
+
+def _landscape_label_html(role: str) -> str:
+    """Render a landscape role label for fast-mode results."""
+    labels = {
+        "supportive": ("Could support your position", "landscape-supportive"),
+        "unsupportive": ("Could weaken your position", "landscape-unsupportive"),
+        "context": ("Context / nuance case", "landscape-context"),
+    }
+    text, cls = labels.get(role, ("", ""))
+    if not text:
+        return ""
+    return f'<div class="landscape-label {cls}">{text}</div>'
+
+
+def _glossary_panel_html(text: str) -> str:
+    """Detect legal terms in text and render a glossary panel if any found."""
+    entries = detect_terms(text)
+    if not entries:
+        return ""
+    items = ""
+    for e in entries:
+        items += (
+            f'<div class="glossary-term">'
+            f'<div class="glossary-term-name">{html_lib.escape(e.term)}</div>'
+            f'<div class="glossary-term-def">{html_lib.escape(e.definition)}</div>'
+            f'<div class="glossary-term-context">'
+            f'SST context: {html_lib.escape(e.sst_context)}</div>'
+            f'</div>'
+        )
+    return (
+        f'<div class="glossary-panel">'
+        f'<div class="glossary-title">Legal terms in this decision</div>'
+        f'{items}</div>'
+    )
+
+
+def _grounded_card_html(text: str) -> str:
+    """Render a grounded case card with styled source references.
+
+    Converts [Source: ...] lines into colour-coded citations and
+    renders the rest as the standard case card HTML.
+    """
+    safe = html_lib.escape(text)
+    # Style [Source: ...] lines
+    safe = re.sub(
+        r"\[Source:\s*(.+?)\s*\|\s*explicit\s*\]",
+        r'<div class="source-ref source-ref-explicit">'
+        r'Supported by: \1 (directly stated)</div>',
+        safe,
+    )
+    safe = re.sub(
+        r"\[Source:\s*(.+?)\s*\|\s*inferred\s*\]",
+        r'<div class="source-ref source-ref-inferred">'
+        r'Inferred from: \1 (reasonable inference)</div>',
+        safe,
+    )
+    safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
+    safe = safe.replace("\n", "<br>")
+    return safe
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +679,136 @@ st.markdown(
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
+    /* ---- Score interpretation legend ---- */
+    .score-legend {
+        background: linear-gradient(135deg, #f0f9ff 0%, #f8fafc 100%);
+        border: 1px solid #bae6fd;
+        border-radius: 10px;
+        padding: 0.85rem 1.15rem;
+        margin-bottom: 1rem;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .score-legend-title {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #0369a1;
+        margin-bottom: 0.5rem;
+    }
+    .score-legend-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 3px;
+        font-size: 0.78rem;
+        color: #334155;
+    }
+    .score-legend-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+    .score-legend-dot-high { background: #10b981; }
+    .score-legend-dot-mod { background: #f59e0b; }
+    .score-legend-dot-low { background: #ef4444; }
+    .score-legend-note {
+        font-size: 0.73rem;
+        color: #64748b;
+        margin-top: 0.4rem;
+        font-style: italic;
+        line-height: 1.5;
+    }
+
+    /* ---- Landscape role labels ---- */
+    .landscape-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border-radius: 6px;
+        padding: 3px 10px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        margin-bottom: 0.5rem;
+    }
+    .landscape-supportive {
+        background: rgba(16, 185, 129, 0.10);
+        color: #047857;
+        border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+    .landscape-unsupportive {
+        background: rgba(239, 68, 68, 0.10);
+        color: #dc2626;
+        border: 1px solid rgba(239, 68, 68, 0.25);
+    }
+    .landscape-context {
+        background: rgba(59, 130, 246, 0.10);
+        color: #2563eb;
+        border: 1px solid rgba(59, 130, 246, 0.25);
+    }
+    .landscape-notice {
+        background: rgba(59, 130, 246, 0.06);
+        border: 1px solid rgba(59, 130, 246, 0.18);
+        border-radius: 8px;
+        padding: 0.55rem 1rem;
+        font-size: 0.78rem;
+        color: #1e40af;
+        line-height: 1.5;
+        margin-bottom: 0.75rem;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* ---- Glossary panel ---- */
+    .glossary-panel {
+        background: linear-gradient(135deg, #faf5ff 0%, #f8fafc 100%);
+        border: 1px solid #e9d5ff;
+        border-radius: 10px;
+        padding: 0.85rem 1.15rem;
+        margin-top: 1rem;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .glossary-title {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #7c3aed;
+        margin-bottom: 0.5rem;
+    }
+    .glossary-term {
+        margin-bottom: 0.65rem;
+    }
+    .glossary-term-name {
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: #581c87;
+        margin-bottom: 2px;
+    }
+    .glossary-term-def {
+        font-size: 0.77rem;
+        color: #475569;
+        line-height: 1.5;
+    }
+    .glossary-term-context {
+        font-size: 0.73rem;
+        color: #7c3aed;
+        line-height: 1.45;
+        margin-top: 2px;
+        font-style: italic;
+    }
+
+    /* ---- Grounded case card ---- */
+    .source-ref {
+        font-size: 0.72rem;
+        color: #6b7280;
+        font-style: italic;
+        margin-left: 1.2rem;
+        margin-bottom: 0.15rem;
+    }
+    .source-ref-explicit { color: #059669; }
+    .source-ref-inferred { color: #d97706; }
+
     /* ---- Responsive ---- */
     @media (max-width: 640px) {
         .status-row { flex-direction: column; gap: 1.5rem; }
@@ -816,32 +1032,83 @@ if output is not None:
             '<div class="section-title">Top Match</div>',
             unsafe_allow_html=True,
         )
+
+        # --- Score interpretation legend ---
+        st.markdown(_score_legend_html(), unsafe_allow_html=True)
+
         top_result = output.results[0]
         base_cache_key = top_result.url or f"rank-1:{top_result.name}:{top_result.date}"
         cache_key = _generation_cache_key(base_cache_key, gen_backend, fast_mode)
         cached_card = st.session_state.case_card_cache.get(cache_key)
 
-        if cached_card is None:
+        grounded_key = cache_key + "|grounded"
+        grounded_card = st.session_state.case_card_cache.get(grounded_key)
+        has_any_card = cached_card is not None or grounded_card is not None
+
+        if not has_any_card:
             st.caption("Summary is generated on demand to keep search fast.")
-            if st.button("Generate summary for top match", type="primary"):
-                pipeline = get_pipeline()
-                pipeline.set_generation_backend(gen_backend)
-                pipeline.fast_mode = fast_mode
-                with st.spinner("Generating case-card summary..."):
-                    generated = pipeline.generate_case_card(top_result.full_text)
-                _cache_case_card(cache_key, generated)
-                st.rerun()
+            gen_col1, gen_col2 = st.columns(2)
+            with gen_col1:
+                if st.button("Generate summary", type="primary"):
+                    pipeline = get_pipeline()
+                    pipeline.set_generation_backend(gen_backend)
+                    pipeline.fast_mode = fast_mode
+                    with st.spinner("Generating case-card summary..."):
+                        generated = pipeline.generate_case_card(
+                            top_result.full_text, grounded=False,
+                        )
+                    _cache_case_card(cache_key, generated)
+                    st.rerun()
+            with gen_col2:
+                if st.button(
+                    "Generate grounded summary (with sources)",
+                    type="primary",
+                ):
+                    pipeline = get_pipeline()
+                    pipeline.set_generation_backend(gen_backend)
+                    pipeline.fast_mode = fast_mode
+                    with st.spinner("Generating grounded case-card summary..."):
+                        generated = pipeline.generate_case_card(
+                            top_result.full_text, grounded=True,
+                        )
+                    _cache_case_card(grounded_key, generated)
+                    st.rerun()
         else:
-            st.markdown(
-                f'<div class="case-card">{_md_to_html(cached_card)}</div>',
-                unsafe_allow_html=True,
-            )
+            # Prefer grounded card if available, fall back to standard
+            if grounded_card:
+                st.markdown(
+                    f'<div class="case-card">'
+                    f'{_grounded_card_html(grounded_card)}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'<div class="case-card">{_md_to_html(cached_card)}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        # --- Glossary panel for top result ---
+        glossary_html = _glossary_panel_html(top_result.snippet)
+        if glossary_html:
+            st.markdown(glossary_html, unsafe_allow_html=True)
 
         st.markdown(
             '<div class="section-title" style="margin-top: 1.5rem;">'
             "All Results</div>",
             unsafe_allow_html=True,
         )
+
+        # --- Fast-mode landscape notice ---
+        if output.landscape_mode:
+            st.markdown(
+                '<div class="landscape-notice">'
+                "<strong>Balanced Legal Landscape</strong> &mdash; "
+                "Fast mode presents cases from different perspectives to "
+                "give you a more complete picture. Cases are labeled by how "
+                "they might relate to your position."
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
         if not output.outcome_diversity:
             st.markdown(
@@ -861,6 +1128,13 @@ if output is not None:
             with st.expander(
                 f"#{r.rank}  {r.name}  \u2014  {r.date}  ({pct_s})"
             ):
+                # Landscape role label (fast mode only)
+                if r.landscape_role:
+                    st.markdown(
+                        _landscape_label_html(r.landscape_role),
+                        unsafe_allow_html=True,
+                    )
+
                 header_html = (
                     f'<div class="rh">'
                     f'<div class="rh-rank">#{r.rank}</div>'
@@ -891,5 +1165,10 @@ if output is not None:
                     f'<div class="r-snippet">{html_lib.escape(snippet)}</div>',
                     unsafe_allow_html=True,
                 )
+
+                # Per-result glossary
+                result_glossary = _glossary_panel_html(r.snippet)
+                if result_glossary:
+                    st.markdown(result_glossary, unsafe_allow_html=True)
     else:
         st.info("No matching decisions were found for this query.")
