@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from . import config
+from .authority import assess as _authority_assess, check_outcome_diversity
 from .data_loader import load_sst_decisions
 from .embedder import SemanticSearcher
 from .reranker import Reranker
@@ -33,6 +34,12 @@ class SearchResult:
     reranker_score: float
     snippet: str
     full_text: str
+    # --- Layer 2: authority-aware fields ---
+    authority_score: float = 0.0   # reranker_score × recency × grounding
+    relevance_label: str = "Medium"  # "High" / "Medium" / "Low"
+    recency_label: str = "Unknown"   # "Recent" / "Older" / "Historical"
+    authority_risk: str = "Medium"   # "Low" / "Medium" / "Verify"
+    outcome: str = "Unknown"         # "Allowed" / "Dismissed" / "Unknown"
 
 
 @dataclass
@@ -40,6 +47,7 @@ class PipelineOutput:
     """Everything the UI needs after a search."""
     case_card: str | None = None
     results: list[SearchResult] = field(default_factory=list)
+    outcome_diversity: bool = True  # False → all top results share the same outcome
 
 
 class SSTNavigatorPipeline:
@@ -298,6 +306,28 @@ class SSTNavigatorPipeline:
                 results=[],
             )
 
+        # ---- Stage 2.5: Authority scoring --------------------------------
+        # Compute authority profiles and re-rank so that the final order
+        # reflects both semantic relevance and how safe each decision is
+        # to rely on (recency × reasoning depth).
+        for r in top_results:
+            profile = _authority_assess(r["reranker_score"], r["date"], r["text"])
+            r["authority_score"]  = profile.authority_score
+            r["relevance_label"]  = profile.relevance_label
+            r["recency_label"]    = profile.recency_label
+            r["authority_risk"]   = profile.authority_risk
+            r["outcome"]          = profile.outcome
+
+        top_results.sort(key=lambda x: x["authority_score"], reverse=True)
+        logger.info(
+            "Authority re-rank complete. Top result: %s (auth=%.3f)",
+            top_results[0]["name"],
+            top_results[0]["authority_score"],
+        )
+
+        # Outcome diversity check — flag if every resolved case went the same way
+        diversity_ok = check_outcome_diversity([r["outcome"] for r in top_results])
+
         # ---- Stage 3: Optional case-card generation ----------------------
         case_card: str | None = None
         if include_case_card:
@@ -314,6 +344,15 @@ class SSTNavigatorPipeline:
                 reranker_score=r["reranker_score"],
                 snippet=r["text"][:config.SNIPPET_LENGTH],
                 full_text=r["text"],
+                authority_score=r["authority_score"],
+                relevance_label=r["relevance_label"],
+                recency_label=r["recency_label"],
+                authority_risk=r["authority_risk"],
+                outcome=r["outcome"],
             ))
 
-        return PipelineOutput(case_card=case_card, results=results)
+        return PipelineOutput(
+            case_card=case_card,
+            results=results,
+            outcome_diversity=diversity_ok,
+        )

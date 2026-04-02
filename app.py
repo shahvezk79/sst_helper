@@ -11,7 +11,7 @@ import re
 
 import streamlit as st
 
-from sst_navigator.pipeline import SSTNavigatorPipeline
+from sst_navigator.pipeline import SSTNavigatorPipeline, SearchResult
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -124,6 +124,44 @@ def _cache_case_card(cache_key: str, value: str) -> None:
     while len(cache) > MAX_CASE_CARD_CACHE_ENTRIES:
         oldest = next(iter(cache))
         del cache[oldest]
+
+
+def _authority_badges_html(r: SearchResult) -> str:
+    """Build the authority badge cluster HTML for a result card."""
+    rel_cls = {
+        "High":   "badge-rel-high",
+        "Medium": "badge-rel-medium",
+        "Low":    "badge-rel-low",
+    }.get(r.relevance_label, "badge-rel-medium")
+
+    rec_cls = {
+        "Recent":    "badge-rec-recent",
+        "Older":     "badge-rec-older",
+        "Historical":"badge-rec-historical",
+        "Unknown":   "badge-rec-unknown",
+    }.get(r.recency_label, "badge-rec-unknown")
+
+    risk_cls = {
+        "Low":    "badge-risk-low",
+        "Medium": "badge-risk-medium",
+        "Verify": "badge-risk-verify",
+    }.get(r.authority_risk, "badge-risk-medium")
+
+    badges = (
+        f'<span class="auth-badge {rel_cls}">Relevance: {r.relevance_label}</span>'
+        f'<span class="auth-badge {rec_cls}">Recency: {r.recency_label}</span>'
+        f'<span class="auth-badge {risk_cls}">'
+        f'{"&#9888; " if r.authority_risk == "Verify" else ""}'
+        f'Authority: {r.authority_risk}</span>'
+    )
+    if r.outcome != "Unknown":
+        outcome_cls = (
+            "badge-outcome-allowed" if r.outcome == "Allowed"
+            else "badge-outcome-dismissed"
+        )
+        badges += f'<span class="auth-badge {outcome_cls}">Outcome: {r.outcome}</span>'
+
+    return f'<div class="auth-badges">{badges}</div>'
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +498,101 @@ st.markdown(
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     }
 
+    /* ---- Authority badges ---- */
+    .auth-badges {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin: 0.55rem 0 0.25rem 0;
+    }
+    .auth-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 100px;
+        padding: 2px 10px;
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        white-space: nowrap;
+    }
+    /* Relevance */
+    .badge-rel-high {
+        background: rgba(16, 185, 129, 0.10);
+        color: #059669;
+        border: 1px solid rgba(16, 185, 129, 0.22);
+    }
+    .badge-rel-medium {
+        background: rgba(245, 158, 11, 0.10);
+        color: #b45309;
+        border: 1px solid rgba(245, 158, 11, 0.22);
+    }
+    .badge-rel-low {
+        background: rgba(239, 68, 68, 0.10);
+        color: #dc2626;
+        border: 1px solid rgba(239, 68, 68, 0.22);
+    }
+    /* Recency */
+    .badge-rec-recent {
+        background: rgba(59, 130, 246, 0.10);
+        color: #2563eb;
+        border: 1px solid rgba(59, 130, 246, 0.22);
+    }
+    .badge-rec-older {
+        background: rgba(245, 158, 11, 0.10);
+        color: #b45309;
+        border: 1px solid rgba(245, 158, 11, 0.22);
+    }
+    .badge-rec-historical {
+        background: rgba(239, 68, 68, 0.10);
+        color: #dc2626;
+        border: 1px solid rgba(239, 68, 68, 0.22);
+    }
+    .badge-rec-unknown {
+        background: rgba(148, 163, 184, 0.10);
+        color: #64748b;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+    }
+    /* Authority risk */
+    .badge-risk-low {
+        background: rgba(16, 185, 129, 0.10);
+        color: #059669;
+        border: 1px solid rgba(16, 185, 129, 0.22);
+    }
+    .badge-risk-medium {
+        background: rgba(245, 158, 11, 0.10);
+        color: #b45309;
+        border: 1px solid rgba(245, 158, 11, 0.22);
+    }
+    .badge-risk-verify {
+        background: rgba(239, 68, 68, 0.10);
+        color: #dc2626;
+        border: 1px solid rgba(239, 68, 68, 0.22);
+    }
+    /* Outcome */
+    .badge-outcome-allowed {
+        background: rgba(16, 185, 129, 0.08);
+        color: #047857;
+        border: 1px solid rgba(16, 185, 129, 0.18);
+    }
+    .badge-outcome-dismissed {
+        background: rgba(100, 116, 139, 0.08);
+        color: #475569;
+        border: 1px solid rgba(100, 116, 139, 0.18);
+    }
+    /* Diversity notice */
+    .diversity-notice {
+        background: rgba(245, 158, 11, 0.08);
+        border: 1px solid rgba(245, 158, 11, 0.20);
+        border-radius: 8px;
+        padding: 0.55rem 1rem;
+        font-size: 0.78rem;
+        color: #92400e;
+        line-height: 1.5;
+        margin-bottom: 0.75rem;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
     /* ---- Responsive ---- */
     @media (max-width: 640px) {
         .status-row { flex-direction: column; gap: 1.5rem; }
@@ -709,6 +842,18 @@ if output is not None:
             "All Results</div>",
             unsafe_allow_html=True,
         )
+
+        if not output.outcome_diversity:
+            st.markdown(
+                '<div class="diversity-notice">'
+                "<strong>Note:</strong> All retrieved decisions appear to share "
+                "the same outcome. Consider broadening your query to surface "
+                "decisions with different results, or consult a legal professional "
+                "for a fuller picture."
+                "</div>",
+                unsafe_allow_html=True,
+            )
+
         for r in output.results:
             pct = r.reranker_score * 100
             pct_s = f"{pct:.1f}%"
@@ -728,6 +873,7 @@ if output is not None:
                     f'<div class="score-track">'
                     f'<div class="score-fill" style="width:{pct}%"></div>'
                     f"</div></div></div>"
+                    + _authority_badges_html(r)
                 )
                 st.markdown(header_html, unsafe_allow_html=True)
 
